@@ -1,0 +1,6 @@
+@NexusPulse.Api_HostAddress = http://localhost:5199
+
+GET {{NexusPulse.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
