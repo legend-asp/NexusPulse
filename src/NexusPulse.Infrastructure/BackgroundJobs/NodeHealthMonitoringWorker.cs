@@ -46,42 +46,49 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
         {
             while (await timer.WaitForNextTickAsync(stoppingToken))
             {
-                List<Guid> activeNodeIds;
-                using (var scope = _scopeFactory.CreateScope())
+                try
                 {
-                    var db = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
-                    activeNodeIds = await db.Nodes
-                        .Where(n => n.IsActive)
-                        .Select(n => n.Id)
-                        .ToListAsync(stoppingToken);
+                    List<Guid> activeNodeIds;
+                    using (var scope = _scopeFactory.CreateScope())
+                    {
+                        var db = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
+                        activeNodeIds = await db.Nodes
+                            .Where(n => n.IsActive)
+                            .Select(n => n.Id)
+                            .ToListAsync(stoppingToken);
+                    }
+
+                    if (activeNodeIds.Count == 0)
+                        continue;
+
+                    var httpClient = _httpClientFactory.CreateClient("NodeMonitoringClient");
+                    var pipeline = _pipelineProvider.GetPipeline<HttpResponseMessage>(ResiliencePipelineConfig.PipelineKey);
+
+                    var parallelOptions = new ParallelOptions
+                    {
+                        MaxDegreeOfParallelism = 10,
+                        CancellationToken = stoppingToken
+                    };
+
+                    await Parallel.ForEachAsync(activeNodeIds, parallelOptions, async (nodeId, ct) =>
+                    {
+                        using var nodeScope = _scopeFactory.CreateScope();
+                        var nodeDbContext = nodeScope.ServiceProvider.GetRequiredService<IAppDbContext>();
+                        var nodeCache = nodeScope.ServiceProvider.GetRequiredService<ICacheService>();
+                        var broadcaster = nodeScope.ServiceProvider.GetService<IMetricsBroadcaster>();
+                        var telegramNotifier = nodeScope.ServiceProvider.GetService<ITelegramNotifier>();
+
+                        var node = await nodeDbContext.Nodes.FindAsync(new object[] { nodeId }, ct);
+                        if (node == null) return;
+
+                        await CheckSingleNodeAsync(node, httpClient, pipeline, nodeDbContext, nodeCache, broadcaster, telegramNotifier, ct);
+                        await nodeDbContext.SaveChangesAsync(ct);
+                    });
                 }
-
-                if (activeNodeIds.Count == 0)
-                    continue;
-
-                var httpClient = _httpClientFactory.CreateClient("NodeMonitoringClient");
-                var pipeline = _pipelineProvider.GetPipeline<HttpResponseMessage>(ResiliencePipelineConfig.PipelineKey);
-
-                var parallelOptions = new ParallelOptions
+                catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
                 {
-                    MaxDegreeOfParallelism = 10,
-                    CancellationToken = stoppingToken
-                };
-
-                await Parallel.ForEachAsync(activeNodeIds, parallelOptions, async (nodeId, ct) =>
-                {
-                    using var nodeScope = _scopeFactory.CreateScope();
-                    var nodeDbContext = nodeScope.ServiceProvider.GetRequiredService<IAppDbContext>();
-                    var nodeCache = nodeScope.ServiceProvider.GetRequiredService<ICacheService>();
-                    var broadcaster = nodeScope.ServiceProvider.GetService<IMetricsBroadcaster>();
-                    var telegramNotifier = nodeScope.ServiceProvider.GetService<ITelegramNotifier>();
-
-                    var node = await nodeDbContext.Nodes.FindAsync(new object[] { nodeId }, ct);
-                    if (node == null) return;
-
-                    await CheckSingleNodeAsync(node, httpClient, pipeline, nodeDbContext, nodeCache, broadcaster, telegramNotifier, ct);
-                    await nodeDbContext.SaveChangesAsync(ct);
-                });
+                    _logger.LogWarning("Telemetry cycle skipped: {Message}", ex.Message);
+                }
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

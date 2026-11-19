@@ -72,6 +72,7 @@ builder.Services.AddScoped<ITelegramNotifier, TelegramBotNotifier>();
 // 10. Background Telemetry & Incident Processing Engines
 builder.Services.AddHostedService<NodeHealthMonitoringWorker>();
 builder.Services.AddHostedService<IncidentProcessingWorker>();
+builder.Services.AddHostedService<TelegramPollingWorker>();
 
 var app = builder.Build();
 
