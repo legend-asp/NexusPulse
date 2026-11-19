@@ -1,7 +1,7 @@
-﻿using System.Net.Http;
-namespace NexusPulse.Infrastructure.BackgroundJobs;
+﻿namespace NexusPulse.Infrastructure.BackgroundJobs;
 
 using System.Diagnostics;
+using System.Net.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -39,22 +39,24 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("NodeHealthMonitoringWorker started. Interval: 5s");
+        _logger.LogInformation("NodeHealthMonitoringWorker started. Monitoring interval: 5 seconds.");
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
 
         try
         {
             while (await timer.WaitForNextTickAsync(stoppingToken))
             {
-                using var scope = _scopeFactory.CreateScope();
-                var dbContext = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
-                var cacheService = scope.ServiceProvider.GetRequiredService<ICacheService>();
+                List<Guid> activeNodeIds;
+                using (var scope = _scopeFactory.CreateScope())
+                {
+                    var db = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
+                    activeNodeIds = await db.Nodes
+                        .Where(n => n.IsActive)
+                        .Select(n => n.Id)
+                        .ToListAsync(stoppingToken);
+                }
 
-                var nodes = await dbContext.Nodes
-                    .Where(n => n.IsActive)
-                    .ToListAsync(stoppingToken);
-
-                if (nodes.Count == 0)
+                if (activeNodeIds.Count == 0)
                     continue;
 
                 var httpClient = _httpClientFactory.CreateClient("NodeMonitoringClient");
@@ -66,15 +68,23 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
                     CancellationToken = stoppingToken
                 };
 
-                await Parallel.ForEachAsync(nodes, parallelOptions, async (node, ct) =>
+                await Parallel.ForEachAsync(activeNodeIds, parallelOptions, async (nodeId, ct) =>
                 {
-                    await CheckSingleNodeAsync(node, httpClient, pipeline, dbContext, cacheService, ct);
-                });
+                    using var nodeScope = _scopeFactory.CreateScope();
+                    var nodeDbContext = nodeScope.ServiceProvider.GetRequiredService<IAppDbContext>();
+                    var nodeCache = nodeScope.ServiceProvider.GetRequiredService<ICacheService>();
+                    var broadcaster = nodeScope.ServiceProvider.GetService<IMetricsBroadcaster>();
+                    var telegramNotifier = nodeScope.ServiceProvider.GetService<ITelegramNotifier>();
 
-                await dbContext.SaveChangesAsync(stoppingToken);
+                    var node = await nodeDbContext.Nodes.FindAsync(new object[] { nodeId }, ct);
+                    if (node == null) return;
+
+                    await CheckSingleNodeAsync(node, httpClient, pipeline, nodeDbContext, nodeCache, broadcaster, telegramNotifier, ct);
+                    await nodeDbContext.SaveChangesAsync(ct);
+                });
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
             _logger.LogInformation("NodeHealthMonitoringWorker stopping gracefully.");
         }
@@ -86,6 +96,8 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
         ResiliencePipeline<HttpResponseMessage> pipeline,
         IAppDbContext dbContext,
         ICacheService cacheService,
+        IMetricsBroadcaster? broadcaster,
+        ITelegramNotifier? telegramNotifier,
         CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
@@ -102,7 +114,12 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
             node.RecordSuccess(latency);
             await cacheService.SetNodeMetricSnapshotAsync(node.Id, latency, (int)response.StatusCode, isSuccess: true);
 
-            // Если нода ранее лежала, значит она ожила!
+            if (broadcaster != null)
+            {
+                await broadcaster.BroadcastMetricUpdateAsync(node.Id, latency, (int)response.StatusCode, isSuccess: true);
+            }
+
+            // Проверяем, ожила ли упавшая ранее нода
             if (await cacheService.HasActiveIncidentLockAsync(node.Id))
             {
                 await cacheService.ReleaseIncidentLockAsync(node.Id);
@@ -111,19 +128,36 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
                     .OrderByDescending(i => i.StartedAt)
                     .FirstOrDefaultAsync(ct);
 
-                activeIncident?.Resolve();
+                if (activeIncident != null)
+                {
+                    activeIncident.Resolve();
+                    var downtime = activeIncident.ResolvedAt.HasValue
+                        ? activeIncident.ResolvedAt.Value - activeIncident.StartedAt
+                        : TimeSpan.Zero;
+
+                    if (telegramNotifier != null)
+                    {
+                        await telegramNotifier.SendRecoveryAlertAsync(node.Name, node.TargetUrl, downtime);
+                    }
+                }
+
+                if (broadcaster != null)
+                {
+                    await broadcaster.BroadcastRecoveryAsync(node.Id, node.Name);
+                }
+
                 _logger.LogInformation("Node {NodeName} RECOVERED. Incident resolved.", node.Name);
             }
         }
         catch (BrokenCircuitException)
         {
             sw.Stop();
-            await HandleFailureAsync(node, (int)sw.ElapsedMilliseconds, "Circuit Breaker Open: Host is unreachable", "CircuitBreakerOpen", dbContext, cacheService, isCritical: true, ct);
+            await HandleFailureAsync(node, (int)sw.ElapsedMilliseconds, "Circuit Breaker Open: Host is unreachable", "CircuitBreakerOpen", dbContext, cacheService, broadcaster, isCritical: true, ct);
         }
         catch (Exception ex)
         {
             sw.Stop();
-            await HandleFailureAsync(node, (int)sw.ElapsedMilliseconds, ex.Message, ex.GetType().Name, dbContext, cacheService, isCritical: false, ct);
+            await HandleFailureAsync(node, (int)sw.ElapsedMilliseconds, ex.Message, ex.GetType().Name, dbContext, cacheService, broadcaster, isCritical: false, ct);
         }
         finally
         {
@@ -138,15 +172,21 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
         string failureType,
         IAppDbContext dbContext,
         ICacheService cacheService,
+        IMetricsBroadcaster? broadcaster,
         bool isCritical,
         CancellationToken ct)
     {
         node.RecordFailure(error, isCritical);
         await cacheService.SetNodeMetricSnapshotAsync(node.Id, latency, 0, isSuccess: false);
 
+        if (broadcaster != null)
+        {
+            await broadcaster.BroadcastMetricUpdateAsync(node.Id, latency, 0, isSuccess: false);
+        }
+
         var newIncidentId = Guid.NewGuid();
 
-        // Атомарный лок в Redis: вернет true ТОЛЬКО при первом падении
+        // Атомарный лок в Redis: вернет true ТОЛЬКО при первом переходе в состояние сбоя
         bool isNewIncident = await cacheService.TryAcquireIncidentLockAsync(node.Id, newIncidentId, TimeSpan.FromHours(24));
 
         if (isNewIncident)
@@ -154,7 +194,7 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
             var incident = new Incident(node.Id, isCritical ? IncidentSeverity.Critical : IncidentSeverity.Warning, error, failureType);
             dbContext.Incidents.Add(incident);
 
-            // Отправляем в неблокирующий Channel
+            // Отправляем событие в неблокирующий System.Threading.Channels
             await _incidentChannel.PublishAsync(new IncidentDetectedEvent(
                 incident.Id,
                 node.Id,
@@ -166,8 +206,8 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
                 DateTime.UtcNow
             ), ct);
 
-            _logger.LogWarning("NEW INCIDENT detected for node {NodeName} ({Url}). Published to channel.", node.Name, node.TargetUrl);
+            _logger.LogWarning("NEW INCIDENT [{Severity}] on {NodeName}: {Error}. Event published to Channel.",
+                incident.Severity, node.Name, error);
         }
     }
 }
-

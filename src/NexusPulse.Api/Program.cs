@@ -1,5 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using NexusPulse.Api.Hubs;
+using NexusPulse.Api.Services;
 using NexusPulse.Application.Common.Interfaces;
 using NexusPulse.Infrastructure.BackgroundJobs;
 using NexusPulse.Infrastructure.Persistence;
@@ -16,6 +17,7 @@ builder.Services.AddOpenApi();
 
 // 2. Real-time WebSockets (SignalR)
 builder.Services.AddSignalR();
+builder.Services.AddSingleton<IMetricsBroadcaster, MetricsBroadcaster>();
 
 // 3. CORS for modern Frontend (React 19 + Vite on port 5173)
 builder.Services.AddCors(options =>
@@ -53,7 +55,7 @@ builder.Services.AddSingleton<IIncidentChannel, IncidentChannel>();
 // 7. Keyed Polly v8 Resilience Pipeline
 builder.Services.AddNodeMonitoringResilience();
 
-// 8. Resilient HttpClient with SocketsHttpHandler connection pooling
+// 8. HttpClients
 builder.Services.AddHttpClient("NodeMonitoringClient")
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
     {
@@ -61,8 +63,15 @@ builder.Services.AddHttpClient("NodeMonitoringClient")
         ConnectTimeout = TimeSpan.FromSeconds(5)
     });
 
-// 9. Background Telemetry Engine
+builder.Services.AddHttpClient("GeminiClient");
+
+// 9. AI & Telegram Alert Dispatching Services
+builder.Services.AddScoped<IAiDiagnosticService, GeminiDiagnosticService>();
+builder.Services.AddScoped<ITelegramNotifier, TelegramBotNotifier>();
+
+// 10. Background Telemetry & Incident Processing Engines
 builder.Services.AddHostedService<NodeHealthMonitoringWorker>();
+builder.Services.AddHostedService<IncidentProcessingWorker>();
 
 var app = builder.Build();
 
