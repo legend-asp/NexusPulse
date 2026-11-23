@@ -21,6 +21,36 @@
     volumes:
       - nexus_redisdata:/data
 
+  nexus-api:
+    build:
+      context: .
+      dockerfile: src/NexusPulse.Api/Dockerfile
+    container_name: nexus-api
+    restart: always
+    depends_on:
+      - nexus-postgres
+      - nexus-redis
+    environment:
+      ConnectionStrings__DefaultConnection: "Host=nexus-postgres;Port=5432;Database=nexus_db;Username=postgres;Password=postgrespassword"
+      ConnectionStrings__Redis: "nexus-redis:6379"
+      GeminiSettings__ApiKey: "YOUR_GEMINI_API_KEY"
+      GeminiSettings__Model: "gemini-3.1-flash-lite"
+      TelegramSettings__BotToken: "YOUR_TELEGRAM_BOT_TOKEN"
+      TelegramSettings__ChatId: "YOUR_TELEGRAM_CHAT_ID"
+    ports:
+      - "5199:5199"
+
+  nexus-ui:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: nexus-ui
+    restart: always
+    depends_on:
+      - nexus-api
+    ports:
+      - "5173:80"
+
 volumes:
   nexus_pgdata:
   nexus_redisdata:
