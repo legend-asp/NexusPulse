@@ -10,8 +10,8 @@ import { Activity, Layers, Server, Cpu } from 'lucide-react';
 const INITIAL_NODES: MonitoredNode[] = [
   {
     id: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
-    name: 'Payment Gateway API',
-    targetUrl: 'https://api.payments.internal/v1/charge',
+    name: 'VPN Web Landing',
+    targetUrl: 'https://nexusvpn.net',
     checkIntervalSeconds: 5,
     timeoutSeconds: 5,
     healthStatus: 'Healthy',
@@ -21,19 +21,52 @@ const INITIAL_NODES: MonitoredNode[] = [
   },
   {
     id: 'a12bc34d-58ee-4172-b567-1e02b2c3d480',
-    name: 'Billing & Invoicing Service',
-    targetUrl: 'https://billing.internal/health',
+    name: 'VPN Node 01 (NL - Amsterdam)',
+    targetUrl: 'https://nl.nexusvpn.net/health',
     checkIntervalSeconds: 5,
     timeoutSeconds: 5,
     healthStatus: 'Healthy',
     lastCheckedAt: new Date().toISOString(),
     isActive: true,
-    lastLatencyMs: 38,
+    lastLatencyMs: 28,
   },
   {
     id: 'c98de76f-12aa-4982-c567-2e02b2c3d481',
-    name: 'Auth & Identity Cluster',
-    targetUrl: 'https://auth.internal/oauth/health',
+    name: 'VPN Node 02 (DE - Frankfurt)',
+    targetUrl: 'https://de.nexusvpn.net/health',
+    checkIntervalSeconds: 5,
+    timeoutSeconds: 5,
+    healthStatus: 'Healthy',
+    lastCheckedAt: new Date().toISOString(),
+    isActive: true,
+    lastLatencyMs: 22,
+  },
+  {
+    id: 'd34ef87a-23bb-4093-d678-3e02b2c3d482',
+    name: 'VPN Node 03 (FI - Helsinki)',
+    targetUrl: 'https://fi.nexusvpn.net/health',
+    checkIntervalSeconds: 5,
+    timeoutSeconds: 5,
+    healthStatus: 'Healthy',
+    lastCheckedAt: new Date().toISOString(),
+    isActive: true,
+    lastLatencyMs: 35,
+  },
+  {
+    id: 'e56fa98b-34cc-4104-e789-4e02b2c3d483',
+    name: 'VPN Node 04 (SE - Stockholm)',
+    targetUrl: 'https://se.nexusvpn.net/health',
+    checkIntervalSeconds: 5,
+    timeoutSeconds: 5,
+    healthStatus: 'Healthy',
+    lastCheckedAt: new Date().toISOString(),
+    isActive: true,
+    lastLatencyMs: 31,
+  },
+  {
+    id: 'f78ab09c-45dd-4215-f890-5e02b2c3d484',
+    name: 'VPN Node 05 (PL - Warsaw)',
+    targetUrl: 'https://pl.nexusvpn.net/health',
     checkIntervalSeconds: 5,
     timeoutSeconds: 5,
     healthStatus: 'Healthy',
@@ -41,35 +74,98 @@ const INITIAL_NODES: MonitoredNode[] = [
     isActive: true,
     lastLatencyMs: 19,
   },
+  {
+    id: 'b89bc10d-56ee-4326-a901-6e02b2c3d485',
+    name: 'Merchant Payment Gateway',
+    targetUrl: 'https://api.cryptomus.com/v1/health',
+    checkIntervalSeconds: 5,
+    timeoutSeconds: 5,
+    healthStatus: 'Healthy',
+    lastCheckedAt: new Date().toISOString(),
+    isActive: true,
+    lastLatencyMs: 45,
+  },
+  {
+    id: 'c90cd21e-67ff-4437-b012-7e02b2c3d486',
+    name: 'Telegram Bot Endpoint',
+    targetUrl: 'https://api.telegram.org',
+    checkIntervalSeconds: 5,
+    timeoutSeconds: 5,
+    healthStatus: 'Healthy',
+    lastCheckedAt: new Date().toISOString(),
+    isActive: true,
+    lastLatencyMs: 52,
+  },
 ];
 
 const getNodeDiagnosis = (node: MonitoredNode) => {
-  if (node.name.includes('Payment')) {
+  if (node.name.includes('Landing') || node.name.includes('Web')) {
+    return {
+      rootCause: 'CDN edge reverse-proxy connection timeout (504): TLS handshake stalls during TLS session renegotiation under high traffic.',
+      immediateFix: 'Purge edge cache zones, recycle upstream Nginx worker pools, and failover to secondary origin cluster.',
+      prevention: 'Configure multi-origin health failover and automate OCSP stapling verification.'
+    };
+  }
+  if (node.name.includes('NL') || node.name.includes('Amsterdam')) {
+    return {
+      rootCause: 'WireGuard / TUN network interface RX buffer ring overflow under heavy UDP torrent packet burst in Amsterdam datacenter.',
+      immediateFix: 'Increase net.core.netdev_max_backlog, restart WireGuard kernel service, and cycle BGP routes.',
+      prevention: 'Enforce eBPF DDoS mitigation rules and distribute peer connections over redundant virtual interfaces.'
+    };
+  }
+  if (node.name.includes('DE') || node.name.includes('Frankfurt')) {
+    return {
+      rootCause: 'BGP routing blackhole detected on upstream Tier-1 transit uplink in Frankfurt (AS3320).',
+      immediateFix: 'Withdraw BGP route announcement via bird daemon and reroute egress VPN traffic through alternate transit peer.',
+      prevention: 'Deploy BGP auto-failover with bidirectional forwarding detection (BFD) and latency-based steering.'
+    };
+  }
+  if (node.name.includes('FI') || node.name.includes('Helsinki')) {
+    return {
+      rootCause: 'OpenVPN daemon kernel crash caused by memory fragmentation under high concurrent tunnel count.',
+      immediateFix: 'Restart multi-daemon OpenVPN instances and reload systemd tun/tap kernel modules.',
+      prevention: 'Migrate legacy tunneled users to high-performance WireGuard protocol instances.'
+    };
+  }
+  if (node.name.includes('SE') || node.name.includes('Stockholm')) {
+    return {
+      rootCause: 'High UDP packet loss (42%) on Stockholm ingress interface due to ISP fiber degradation.',
+      immediateFix: 'Trip circuit breaker, notify upstream NOC, and divert client ingress to Helsinki gateway.',
+      prevention: 'Deploy health-check weighted DNS load balancing across Nordic server regions.'
+    };
+  }
+  if (node.name.includes('PL') || node.name.includes('Warsaw')) {
+    return {
+      rootCause: 'CPU core throttling and high packet scheduling jitter due to hypervisor noisy neighbor on VPS host.',
+      immediateFix: 'Migrate active client sessions to standby VPS node and execute warm reboot on worker.',
+      prevention: 'Enforce dedicated CPU core pinning (taskset) and configure node autoscaling.'
+    };
+  }
+  if (node.name.includes('Payment') || node.name.includes('Merchant')) {
     return {
       rootCause: 'Upstream banking acquiring gateway timed out after 30000ms during credit card tokenization due to acquiring bank thread-pool exhaustion.',
       immediateFix: 'Trip Polly v8 Circuit Breaker to OPEN, failover to secondary merchant gateway, and drain socket queue.',
       prevention: 'Configure Keyed Polly v8 resilience pipeline with Jitter Exponential Retry and isolated bulkhead pools.'
     };
   }
-  if (node.name.includes('Billing')) {
-    return {
-      rootCause: 'PostgreSQL transaction deadlock detected during recurring subscription invoice generation under heavy row lock contention.',
-      immediateFix: 'Terminate blocking backend transaction PID, cycle read-replica connection pools, and restart worker pods.',
-      prevention: 'Enforce strict statement_timeout (3s) on billing queries and migrate bulk invoice aggregation to asynchronous background jobs.'
-    };
-  }
   return {
-    rootCause: 'OAuth2 / JWT token validation cluster exhausted available HTTP connection sockets due to sudden authentication spike.',
-    immediateFix: 'Increase SocketsHttpHandler connection pool limit, restart auth pods, and enable distributed Redis token caching.',
-    prevention: 'Deploy rate limiting at edge reverse proxy and configure auto-scaling group with min 3 replicas.'
+    rootCause: 'Telegram Bot API webhook latency spike: HTTP 429 Too Many Requests due to broadcast message surge.',
+    immediateFix: 'Switch bot client from push webhook to resilient Long Polling with jittered backoff.',
+    prevention: 'Implement token bucket rate limiter with Redis-backed message queuing for Telegram notifications.'
   };
 };
 
 export function App() {
   const [nodes, setNodes] = useState<MonitoredNode[]>(() => {
     try {
-      const saved = localStorage.getItem('nexus_pulse_nodes');
-      return saved ? JSON.parse(saved) : INITIAL_NODES;
+      const saved = localStorage.getItem('nexus_pulse_vpn_nodes_v2');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length === INITIAL_NODES.length) {
+          return parsed;
+        }
+      }
+      return INITIAL_NODES;
     } catch {
       return INITIAL_NODES;
     }
@@ -77,7 +173,7 @@ export function App() {
 
   const [incidents, setIncidents] = useState<Record<string, IncidentAlertPayload>>(() => {
     try {
-      const saved = localStorage.getItem('nexus_pulse_incidents');
+      const saved = localStorage.getItem('nexus_pulse_vpn_incidents_v2');
       return saved ? JSON.parse(saved) : {};
     } catch {
       return {};
@@ -89,13 +185,13 @@ export function App() {
   // Сохранение состояния в localStorage для сохранения при обновлении F5
   useEffect(() => {
     try {
-      localStorage.setItem('nexus_pulse_nodes', JSON.stringify(nodes));
+      localStorage.setItem('nexus_pulse_vpn_nodes_v2', JSON.stringify(nodes));
     } catch { }
   }, [nodes]);
 
   useEffect(() => {
     try {
-      localStorage.setItem('nexus_pulse_incidents', JSON.stringify(incidents));
+      localStorage.setItem('nexus_pulse_vpn_incidents_v2', JSON.stringify(incidents));
     } catch { }
   }, [incidents]);
 
@@ -432,7 +528,7 @@ export function App() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
           {nodes.map((node) => (
             <NodeCard
               key={node.id}

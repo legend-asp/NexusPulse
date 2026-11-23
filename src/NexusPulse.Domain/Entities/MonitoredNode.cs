@@ -15,7 +15,8 @@ public class MonitoredNode : BaseEntity
 
     private MonitoredNode() { }
 
-    public MonitoredNode(string name, string targetUrl, int checkIntervalSeconds = 30, int timeoutSeconds = 5)
+    public MonitoredNode(Guid id, string name, string targetUrl, int checkIntervalSeconds = 30, int timeoutSeconds = 5)
+        : base(id)
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("Node name cannot be empty.", nameof(name));
@@ -35,6 +36,11 @@ public class MonitoredNode : BaseEntity
         TimeoutSeconds = timeoutSeconds;
         HealthStatus = NodeStatus.Healthy;
         IsActive = true;
+    }
+
+    public MonitoredNode(string name, string targetUrl, int checkIntervalSeconds = 30, int timeoutSeconds = 5)
+        : this(Guid.NewGuid(), name, targetUrl, checkIntervalSeconds, timeoutSeconds)
+    {
     }
 
     public void RecordSuccess(int responseTimeMs)

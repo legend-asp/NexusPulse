@@ -1,5 +1,6 @@
 ﻿namespace NexusPulse.Infrastructure.Services;
 
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using NexusPulse.Application.Common.Interfaces;
@@ -9,6 +10,8 @@ public class RedisCacheService : ICacheService
 {
     private readonly IDatabase _database;
     private readonly ILogger<RedisCacheService> _logger;
+    private static readonly ConcurrentDictionary<Guid, Guid> _inMemoryIncidentLocks = new();
+    private static readonly ConcurrentDictionary<Guid, string> _inMemoryMetrics = new();
 
     public RedisCacheService(IConnectionMultiplexer connectionMultiplexer, ILogger<RedisCacheService> logger)
     {
@@ -21,36 +24,53 @@ public class RedisCacheService : ICacheService
         string key = $"incident:active:{nodeId}";
         string value = incidentId.ToString();
 
-        bool isSet = await _database.StringSetAsync(
-            key: key,
-            value: value,
-            expiry: ttl,
-            when: When.NotExists
-        );
-
-        if (isSet)
+        try
         {
-            _logger.LogInformation("Active incident lock acquired for node {NodeId} with incident {IncidentId}", nodeId, incidentId);
-        }
-        else
-        {
-            _logger.LogDebug("Active incident lock already exists for node {NodeId}. Deduplication applied.", nodeId);
-        }
+            bool isSet = await _database.StringSetAsync(
+                key: key,
+                value: value,
+                expiry: ttl,
+                when: When.NotExists
+            );
 
-        return isSet;
+            if (isSet)
+            {
+                _inMemoryIncidentLocks[nodeId] = incidentId;
+                _logger.LogInformation("Active incident lock acquired in Redis for node {NodeId} with incident {IncidentId}", nodeId, incidentId);
+            }
+            return isSet;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("Redis offline ({Message}), using in-memory incident lock for node {NodeId}", ex.Message, nodeId);
+            return _inMemoryIncidentLocks.TryAdd(nodeId, incidentId);
+        }
     }
 
     public async Task ReleaseIncidentLockAsync(Guid nodeId)
     {
         string key = $"incident:active:{nodeId}";
-        await _database.KeyDeleteAsync(key);
-        _logger.LogInformation("Released incident lock for node {NodeId}", nodeId);
+        try
+        {
+            await _database.KeyDeleteAsync(key);
+            _logger.LogInformation("Released incident lock in Redis for node {NodeId}", nodeId);
+        }
+        catch { }
+
+        _inMemoryIncidentLocks.TryRemove(nodeId, out _);
     }
 
     public async Task<bool> HasActiveIncidentLockAsync(Guid nodeId)
     {
         string key = $"incident:active:{nodeId}";
-        return await _database.KeyExistsAsync(key);
+        try
+        {
+            return await _database.KeyExistsAsync(key);
+        }
+        catch
+        {
+            return _inMemoryIncidentLocks.ContainsKey(nodeId);
+        }
     }
 
     public async Task SetNodeMetricSnapshotAsync(Guid nodeId, int responseTimeMs, int statusCode, bool isSuccess)
@@ -65,6 +85,13 @@ public class RedisCacheService : ICacheService
         };
         string json = JsonSerializer.Serialize(snapshot);
 
-        await _database.StringSetAsync(key, json, TimeSpan.FromSeconds(60));
+        try
+        {
+            await _database.StringSetAsync(key, json, TimeSpan.FromSeconds(60));
+        }
+        catch
+        {
+            _inMemoryMetrics[nodeId] = json;
+        }
     }
 }

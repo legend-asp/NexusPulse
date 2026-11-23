@@ -199,10 +199,15 @@ public class TelegramPollingWorker : BackgroundService
 
     private static (string Name, string Url) GetFallbackNodeInfo(Guid id) => id switch
     {
-        _ when id == Guid.Parse("f47ac10b-58cc-4372-a567-0e02b2c3d479") => ("Payment Gateway API", "https://api.payments.internal/v1/charge"),
-        _ when id == Guid.Parse("a12bc34d-58ee-4172-b567-1e02b2c3d480") => ("Billing & Invoicing Service", "https://billing.internal/health"),
-        _ when id == Guid.Parse("c98de76f-12aa-4982-c567-2e02b2c3d481") => ("Auth & Identity Cluster", "https://auth.internal/oauth/health"),
-        _ => ("Payment Gateway API", "https://api.payments.internal/v1/charge")
+        _ when id == Guid.Parse("f47ac10b-58cc-4372-a567-0e02b2c3d479") => ("VPN Web Landing", "https://nexusvpn.net"),
+        _ when id == Guid.Parse("a12bc34d-58ee-4172-b567-1e02b2c3d480") => ("VPN Node 01 (NL - Amsterdam)", "https://nl.nexusvpn.net/health"),
+        _ when id == Guid.Parse("c98de76f-12aa-4982-c567-2e02b2c3d481") => ("VPN Node 02 (DE - Frankfurt)", "https://de.nexusvpn.net/health"),
+        _ when id == Guid.Parse("d34ef87a-23bb-4093-d678-3e02b2c3d482") => ("VPN Node 03 (FI - Helsinki)", "https://fi.nexusvpn.net/health"),
+        _ when id == Guid.Parse("e56fa98b-34cc-4104-e789-4e02b2c3d483") => ("VPN Node 04 (SE - Stockholm)", "https://se.nexusvpn.net/health"),
+        _ when id == Guid.Parse("f78ab09c-45dd-4215-f890-5e02b2c3d484") => ("VPN Node 05 (PL - Warsaw)", "https://pl.nexusvpn.net/health"),
+        _ when id == Guid.Parse("b89bc10d-56ee-4326-a901-6e02b2c3d485") => ("Merchant Payment Gateway", "https://api.cryptomus.com/v1/health"),
+        _ when id == Guid.Parse("c90cd21e-67ff-4437-b012-7e02b2c3d486") => ("Telegram Bot Endpoint", "https://api.telegram.org"),
+        _ => ("Monitored VPN Node", "https://internal.service/health")
     };
 
     private Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken ct)

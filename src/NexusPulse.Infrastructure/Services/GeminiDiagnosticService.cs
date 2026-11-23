@@ -23,10 +23,10 @@ public class GeminiDiagnosticService : IAiDiagnosticService
         _httpClient = httpClientFactory.CreateClient("GeminiClient");
         if (_httpClient != null)
         {
-            _httpClient.Timeout = TimeSpan.FromSeconds(2);
+            _httpClient.Timeout = TimeSpan.FromSeconds(6);
         }
         _apiKey = configuration["GeminiSettings:ApiKey"];
-        _model = configuration["GeminiSettings:Model"] ?? "gemini-2.5-flash";
+        _model = configuration["GeminiSettings:Model"] ?? "gemini-flash-lite-latest";
         _logger = logger;
     }
 
@@ -80,13 +80,14 @@ public class GeminiDiagnosticService : IAiDiagnosticService
             };
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(TimeSpan.FromSeconds(2));
+            cts.CancelAfter(TimeSpan.FromSeconds(6));
 
             var url = $"https://generativelanguage.googleapis.com/v1beta/models/{_model}:generateContent?key={_apiKey}";
             var response = await _httpClient.PostAsJsonAsync(url, requestBody, cts.Token);
 
             if (!response.IsSuccessStatusCode)
             {
+                _logger.LogWarning("Gemini request failed ({StatusCode}): {Reason}. Using resilient fallback.", response.StatusCode, response.ReasonPhrase);
                 return GetFallbackDiagnosis(incidentEvent);
             }
 
@@ -97,6 +98,8 @@ public class GeminiDiagnosticService : IAiDiagnosticService
             {
                 return GetFallbackDiagnosis(incidentEvent);
             }
+
+            _logger.LogInformation("Gemini AI diagnosis generated successfully via model {Model}", _model);
 
             var diagnosis = JsonSerializer.Deserialize<AiDiagnosis>(text, new JsonSerializerOptions
             {
