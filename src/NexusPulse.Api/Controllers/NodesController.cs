@@ -14,15 +14,18 @@ public class NodesController : ControllerBase
     private readonly IAppDbContext _dbContext;
     private readonly IIncidentChannel _incidentChannel;
     private readonly ITelegramNotifier _telegramNotifier;
+    private readonly IMetricsBroadcaster _broadcaster;
 
     public NodesController(
         IAppDbContext dbContext,
         IIncidentChannel incidentChannel,
-        ITelegramNotifier telegramNotifier)
+        ITelegramNotifier telegramNotifier,
+        IMetricsBroadcaster broadcaster)
     {
         _dbContext = dbContext;
         _incidentChannel = incidentChannel;
         _telegramNotifier = telegramNotifier;
+        _broadcaster = broadcaster;
     }
 
     [HttpGet]
@@ -173,6 +176,12 @@ public class NodesController : ControllerBase
                 node.RecordSuccess(24);
                 await _dbContext.SaveChangesAsync(ct);
             }
+        }
+        catch { }
+
+        try
+        {
+            await _broadcaster.BroadcastRecoveryAsync(id, nodeName);
         }
         catch { }
 
