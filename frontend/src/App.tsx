@@ -66,9 +66,38 @@ const getNodeDiagnosis = (node: MonitoredNode) => {
 };
 
 export function App() {
-  const [nodes, setNodes] = useState<MonitoredNode[]>(INITIAL_NODES);
-  const [incidents, setIncidents] = useState<Record<string, IncidentAlertPayload>>({});
+  const [nodes, setNodes] = useState<MonitoredNode[]>(() => {
+    try {
+      const saved = localStorage.getItem('nexus_pulse_nodes');
+      return saved ? JSON.parse(saved) : INITIAL_NODES;
+    } catch {
+      return INITIAL_NODES;
+    }
+  });
+
+  const [incidents, setIncidents] = useState<Record<string, IncidentAlertPayload>>(() => {
+    try {
+      const saved = localStorage.getItem('nexus_pulse_incidents');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
   const [modalNode, setModalNode] = useState<MonitoredNode | null>(null);
+
+  // Сохранение состояния в localStorage для сохранения при обновлении F5
+  useEffect(() => {
+    try {
+      localStorage.setItem('nexus_pulse_nodes', JSON.stringify(nodes));
+    } catch { }
+  }, [nodes]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('nexus_pulse_incidents', JSON.stringify(incidents));
+    } catch { }
+  }, [incidents]);
 
   // Реф для предотвращения случайного сброса упавшей ноды фоновым SignalR-пульсом
   const incidentsRef = useRef(incidents);
