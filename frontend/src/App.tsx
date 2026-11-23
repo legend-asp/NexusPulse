@@ -56,7 +56,7 @@ export function App() {
         }
       })
       .catch(() => {
-        // Если бэкенд выключен — используем мок-ноды
+        // Если бэкенд оффлайн — используются встроенные мок-ноды
       });
   }, []);
 
@@ -154,22 +154,50 @@ export function App() {
     }
   };
 
-  const handleResolveIncident = () => {
-    if (!activeIncident) return;
-    handleNodeRecovered({
-      nodeId: activeIncident.incident.nodeId,
-      nodeName: activeIncident.incident.nodeName,
-      timestamp: new Date().toISOString(),
+  // 7. Восстановление конкретной ноды с карточки
+  const handleRestoreNode = (nodeId: string) => {
+    setNodes((prev) =>
+      prev.map((node) => {
+        if (node.id === nodeId) {
+          return {
+            ...node,
+            healthStatus: 'Healthy',
+            lastLatencyMs: Math.floor(Math.random() * 20) + 15,
+            lastCheckedAt: new Date().toISOString(),
+          };
+        }
+        return node;
+      })
+    );
+
+    setActiveIncident((curr) => {
+      // Если все остальные ноды здоровы — гасим баннер инцидента
+      const remainingDown = nodes.filter((n) => n.id !== nodeId && n.healthStatus === 'Down');
+      return remainingDown.length === 0 ? null : curr?.incident.nodeId === nodeId ? null : curr;
     });
+  };
+
+  // 8. Восстановление всех нод по кнопке на баннере инцидента
+  const handleResolveIncident = () => {
+    setNodes((prev) =>
+      prev.map((n) => ({
+        ...n,
+        healthStatus: 'Healthy',
+        lastLatencyMs: n.healthStatus === 'Down' ? Math.floor(Math.random() * 20) + 15 : n.lastLatencyMs,
+        lastCheckedAt: new Date().toISOString(),
+      }))
+    );
+    setActiveIncident(null);
   };
 
   const healthyNodesCount = nodes.filter((n) => n.healthStatus === 'Healthy').length;
   const healthPercent = Math.round((healthyNodesCount / nodes.length) * 100);
+  const activeDownCount = nodes.filter((n) => n.healthStatus === 'Down').length;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
       {/* Шапка дашборда */}
-      <Header isConnected={isConnected} activeIncidentsCount={activeIncident ? 1 : 0} />
+      <Header isConnected={isConnected} activeIncidentsCount={activeDownCount} />
 
       {/* Основной контент */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -229,7 +257,12 @@ export function App() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {nodes.map((node) => (
-            <NodeCard key={node.id} node={node} onSimulateFailure={handleSimulateFailure} />
+            <NodeCard
+              key={node.id}
+              node={node}
+              onSimulateFailure={handleSimulateFailure}
+              onRestoreNode={handleRestoreNode}
+            />
           ))}
         </div>
       </main>

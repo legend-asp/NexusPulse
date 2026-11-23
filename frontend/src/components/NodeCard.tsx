@@ -1,13 +1,14 @@
 import React from 'react';
 import type { MonitoredNode } from '../types';
-import { Server, Activity, AlertCircle, CheckCircle2, Flame, ExternalLink } from 'lucide-react';
+import { Server, Activity, AlertCircle, CheckCircle2, Flame, ExternalLink, RotateCcw } from 'lucide-react';
 
 export interface NodeCardProps {
   node: MonitoredNode;
   onSimulateFailure: (id: string) => void;
+  onRestoreNode: (id: string) => void;
 }
 
-export const NodeCard: React.FC<NodeCardProps> = ({ node, onSimulateFailure }) => {
+export const NodeCard: React.FC<NodeCardProps> = ({ node, onSimulateFailure, onRestoreNode }) => {
   const status = node.healthStatus || 'Healthy';
   const isDown = status === 'Down';
   const isDegraded = status === 'Degraded';
@@ -124,20 +125,26 @@ export const NodeCard: React.FC<NodeCardProps> = ({ node, onSimulateFailure }) =
         </div>
       </div>
 
-      {/* Нижняя часть: Кнопка симуляции сбоя */}
-      <button
-        type="button"
-        onClick={() => onSimulateFailure(node.id)}
-        disabled={isDown}
-        className={`mt-4 flex w-full items-center justify-center gap-2 rounded-lg border py-2.5 px-4 text-xs font-semibold transition-all duration-200 ${
-          isDown
-            ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
-            : 'bg-rose-500/10 hover:bg-rose-600 text-rose-300 hover:text-white border-rose-500/30 hover:border-rose-600 shadow-sm active:scale-[0.98]'
-        }`}
-      >
-        <Flame className={`w-3.5 h-3.5 ${isDown ? 'text-slate-500' : 'text-rose-400'}`} />
-        {isDown ? 'Outage Active' : 'Simulate Outage'}
-      </button>
+      {/* Нижняя часть: Кнопка действия (Simulate Outage ИЛИ Restore Service) */}
+      {isDown ? (
+        <button
+          type="button"
+          onClick={() => onRestoreNode(node.id)}
+          className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border py-2.5 px-4 text-xs font-semibold transition-all duration-200 bg-emerald-500/10 hover:bg-emerald-600 text-emerald-300 hover:text-white border-emerald-500/30 hover:border-emerald-600 shadow-sm active:scale-[0.98]"
+        >
+          <RotateCcw className="w-3.5 h-3.5 text-emerald-400 group-hover:text-white" />
+          Restore Node
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => onSimulateFailure(node.id)}
+          className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border py-2.5 px-4 text-xs font-semibold transition-all duration-200 bg-rose-500/10 hover:bg-rose-600 text-rose-300 hover:text-white border-rose-500/30 hover:border-rose-600 shadow-sm active:scale-[0.98]"
+        >
+          <Flame className="w-3.5 h-3.5 text-rose-400" />
+          Simulate Outage
+        </button>
+      )}
     </div>
   );
 };
