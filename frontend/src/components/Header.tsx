@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, Radio, ShieldCheck } from 'lucide-react';
+import { Activity } from 'lucide-react';
 
 interface HeaderProps {
   isConnected: boolean;
@@ -8,53 +8,61 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({ isConnected, activeIncidentsCount }) => {
   return (
-    <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur-md sticky top-0 z-40">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-        {/* Логотип и Название */}
+    <header className="border-b border-zinc-800 bg-zinc-950/90 backdrop-blur sticky top-0 z-40">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
+        {/* Brand */}
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
-            <Activity className="w-5 h-5 text-white" />
+          <div className="w-8 h-8 rounded-md bg-zinc-900 border border-zinc-700/80 flex items-center justify-center text-zinc-100 shadow-sm">
+            <Activity className="w-4 h-4 text-emerald-400" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-lg text-slate-100 tracking-tight">NexusPulse</span>
-              <span className="text-[10px] font-mono uppercase bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-1.5 py-0.5 rounded">
-                v2.0
-              </span>
-            </div>
-            <p className="text-xs text-slate-400 hidden sm:block">
-              Distributed Observability & Autonomous Incident Response
-            </p>
+          <div className="flex items-center gap-2.5">
+            <span className="font-semibold text-sm text-zinc-100 tracking-tight font-mono">
+              NexusPulse
+            </span>
+            <span className="text-[11px] font-mono text-zinc-400 bg-zinc-900 px-1.5 py-0.5 rounded border border-zinc-800">
+              v2.0
+            </span>
+            <span className="text-zinc-600 hidden sm:inline">•</span>
+            <span className="text-xs text-zinc-400 font-mono hidden sm:inline">
+              Distributed Telemetry &amp; Observability
+            </span>
           </div>
         </div>
 
-        {/* Правая часть: Статус SignalR и индикатор инцидентов */}
-        <div className="flex items-center gap-4">
-          {/* Индикатор инцидентов */}
+        {/* Status Indicators */}
+        <div className="flex items-center gap-3 text-xs">
+          {/* Operational Status */}
           <div
-            className={`hidden sm:flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium border ${
+            className={`flex items-center gap-2 px-3 py-1 rounded-md border font-mono ${
               activeIncidentsCount > 0
-                ? 'bg-rose-500/10 text-rose-300 border-rose-500/30 animate-pulse'
-                : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                ? 'bg-red-950/40 text-red-400 border-red-800/60'
+                : 'bg-zinc-900 text-zinc-300 border-zinc-800'
             }`}
           >
-            <ShieldCheck className="w-3.5 h-3.5" />
-            <span>
-              {activeIncidentsCount > 0 ? `${activeIncidentsCount} Incident Active` : 'All Systems Operational'}
-            </span>
+            {activeIncidentsCount > 0 ? (
+              <>
+                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                <span>
+                  {activeIncidentsCount} {activeIncidentsCount === 1 ? 'Outage Active' : 'Outages Active'}
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                <span>All Nodes Operational</span>
+              </>
+            )}
           </div>
 
-          {/* Статус WebSockets (SignalR) */}
-          <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-slate-950/60 border border-slate-800 text-xs">
+          {/* WebSocket stream status */}
+          <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-zinc-900 border border-zinc-800 font-mono text-zinc-400">
             <span
-              className={`w-2 h-2 rounded-full ${
-                isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'
+              className={`w-1.5 h-1.5 rounded-full ${
+                isConnected ? 'bg-emerald-400' : 'bg-zinc-600'
               }`}
             />
-            <Radio className="w-3.5 h-3.5 text-slate-400" />
-            <span className="font-mono text-slate-300 text-xs">
-              {isConnected ? 'SignalR: Live' : 'SignalR: Offline'}
-            </span>
+            <span className="hidden md:inline">{isConnected ? 'SignalR: Connected' : 'SignalR: Standby'}</span>
+            <span className="md:hidden">{isConnected ? 'Live' : 'Standby'}</span>
           </div>
         </div>
       </div>

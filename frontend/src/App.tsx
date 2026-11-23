@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { MonitoredNode, MetricUpdatePayload, IncidentAlertPayload, NodeRecoveredPayload } from './types';
 import { useSignalR } from './hooks/useSignalR';
 import { Header } from './components/Header';
 import { NodeCard } from './components/NodeCard';
 import { IncidentBanner } from './components/IncidentBanner';
 import { IncidentModal } from './components/IncidentModal';
-import { ShieldCheck, Activity, Layers, Server } from 'lucide-react';
+import { Activity, Layers, Server, Cpu } from 'lucide-react';
 
 const INITIAL_NODES: MonitoredNode[] = [
   {
@@ -45,7 +45,7 @@ const INITIAL_NODES: MonitoredNode[] = [
 
 export function App() {
   const [nodes, setNodes] = useState<MonitoredNode[]>(INITIAL_NODES);
-  const [activeIncident, setActiveIncident] = useState<IncidentAlertPayload | null>(null);
+  const [incidents, setIncidents] = useState<Record<string, IncidentAlertPayload>>({});
   const [modalNode, setModalNode] = useState<MonitoredNode | null>(null);
 
   // 1. Попытка загрузить актуальные ноды из бэкенда
@@ -79,9 +79,13 @@ export function App() {
     );
   }, []);
 
-  // 3. Обработка входящего инцидента с анализом
+  // 3. Обработка входящего инцидента с детальным анализом
   const handleIncidentAlert = useCallback((data: IncidentAlertPayload) => {
-    setActiveIncident(data);
+    setIncidents((prev) => ({
+      ...prev,
+      [data.incident.nodeId]: data,
+    }));
+
     setNodes((prev) =>
       prev.map((node) => {
         if (node.id === data.incident.nodeId) {
@@ -98,7 +102,12 @@ export function App() {
 
   // 4. Обработка восстановления ноды
   const handleNodeRecovered = useCallback((data: NodeRecoveredPayload) => {
-    setActiveIncident((curr) => (curr?.incident.nodeId === data.nodeId ? null : curr));
+    setIncidents((prev) => {
+      const next = { ...prev };
+      delete next[data.nodeId];
+      return next;
+    });
+
     setNodes((prev) =>
       prev.map((node) => {
         if (node.id === data.nodeId) {
@@ -111,6 +120,7 @@ export function App() {
         return node;
       })
     );
+
     setModalNode((curr) => (curr?.id === data.nodeId ? null : curr));
   }, []);
 
@@ -135,7 +145,7 @@ export function App() {
 
       if (!res.ok) throw new Error('API request failed');
     } catch {
-      // Graceful fallback для изолированного UI-демо
+      // Изолированный fallback для мгновенного UI-отклика
       handleIncidentAlert({
         incident: {
           incidentId: 'inc-' + Date.now(),
@@ -148,7 +158,7 @@ export function App() {
           occurredAt: new Date().toISOString(),
         },
         aiDiagnosis: {
-          rootCause: `The ${targetNode.name} failed to complete its upstream database transaction within the 30-second timeout window due to thread-pool exhaustion or high connection latency.`,
+          rootCause: `The ${targetNode.name} failed to complete its upstream database transaction within the 30-second timeout window due to connection pool saturation or a deadlocked query.`,
           immediateFix: 'Restart or horizontally scale backend instances and cycle database connection pools.',
           prevention: 'Apply circuit breaker with Polly v8 and configure bulkheads to isolate slow upstream transactions.',
         },
@@ -157,7 +167,7 @@ export function App() {
     }
   };
 
-  // 7. Восстановление конкретной ноды с карточки
+  // 7. Восстановление конкретной ноды
   const handleRestoreNode = (nodeId: string) => {
     setNodes((prev) =>
       prev.map((node) => {
@@ -173,9 +183,10 @@ export function App() {
       })
     );
 
-    setActiveIncident((curr) => {
-      const remainingDown = nodes.filter((n) => n.id !== nodeId && n.healthStatus === 'Down');
-      return remainingDown.length === 0 ? null : curr?.incident.nodeId === nodeId ? null : curr;
+    setIncidents((prev) => {
+      const next = { ...prev };
+      delete next[nodeId];
+      return next;
     });
 
     if (modalNode?.id === nodeId) {
@@ -183,8 +194,8 @@ export function App() {
     }
   };
 
-  // 8. Восстановление всех нод по кнопке на баннере инцидента
-  const handleResolveIncident = () => {
+  // 8. Восстановление всех упавших нод сразу
+  const handleResolveAll = () => {
     setNodes((prev) =>
       prev.map((n) => ({
         ...n,
@@ -193,7 +204,7 @@ export function App() {
         lastCheckedAt: new Date().toISOString(),
       }))
     );
-    setActiveIncident(null);
+    setIncidents({});
     setModalNode(null);
   };
 
@@ -201,8 +212,14 @@ export function App() {
   const healthPercent = Math.round((healthyNodesCount / nodes.length) * 100);
   const activeDownCount = nodes.filter((n) => n.healthStatus === 'Down').length;
 
+  // Самый свежий инцидент для верхнего баннера
+  const latestIncident = useMemo(() => {
+    const list = Object.values(incidents);
+    return list.length > 0 ? list[list.length - 1] : null;
+  }, [incidents]);
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans selection:bg-zinc-800 selection:text-zinc-100">
       {/* Шапка дашборда */}
       <Header isConnected={isConnected} activeIncidentsCount={activeDownCount} />
 
@@ -210,60 +227,67 @@ export function App() {
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Баннер активного инцидента */}
         <IncidentBanner
-          incidentAlert={activeIncident}
-          onResolve={handleResolveIncident}
+          incidentAlert={latestIncident}
+          activeCount={activeDownCount}
+          onResolve={handleResolveAll}
           onViewModal={() => {
-            const downNode = nodes.find((n) => n.id === activeIncident?.incident.nodeId);
+            const downNode = nodes.find((n) => n.id === latestIncident?.incident.nodeId);
             if (downNode) setModalNode(downNode);
           }}
         />
 
         {/* Сводная панель метрик системы */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
-            <div className="flex items-center gap-2 text-slate-400 text-xs mb-1">
-              <Server className="w-4 h-4 text-indigo-400" />
+          <div className="p-4 rounded-lg bg-zinc-900 border border-zinc-800">
+            <div className="flex items-center gap-2 text-zinc-400 text-xs mb-1 font-mono">
+              <Server className="w-3.5 h-3.5 text-zinc-400" />
               <span>Monitored Nodes</span>
             </div>
-            <div className="text-2xl font-bold font-mono text-slate-100">{nodes.length}</div>
+            <div className="text-2xl font-bold font-mono text-zinc-100">{nodes.length}</div>
           </div>
 
-          <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
-            <div className="flex items-center gap-2 text-slate-400 text-xs mb-1">
-              <Activity className="w-4 h-4 text-emerald-400" />
-              <span>System Health</span>
+          <div className="p-4 rounded-lg bg-zinc-900 border border-zinc-800">
+            <div className="flex items-center gap-2 text-zinc-400 text-xs mb-1 font-mono">
+              <Activity className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Cluster Health</span>
             </div>
             <div
               className={`text-2xl font-bold font-mono ${
-                healthPercent === 100 ? 'text-emerald-400' : 'text-amber-400'
+                healthPercent === 100
+                  ? 'text-emerald-400'
+                  : healthPercent > 50
+                  ? 'text-amber-400'
+                  : 'text-red-400'
               }`}
             >
               {healthPercent}%
             </div>
           </div>
 
-          <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
-            <div className="flex items-center gap-2 text-slate-400 text-xs mb-1">
-              <Layers className="w-4 h-4 text-cyan-400" />
+          <div className="p-4 rounded-lg bg-zinc-900 border border-zinc-800">
+            <div className="flex items-center gap-2 text-zinc-400 text-xs mb-1 font-mono">
+              <Layers className="w-3.5 h-3.5 text-zinc-400" />
               <span>Resilience Engine</span>
             </div>
-            <div className="text-sm font-semibold text-slate-200 mt-1">Polly v8 + Redis</div>
+            <div className="text-sm font-semibold text-zinc-200 mt-1 font-mono">Polly v8 + Redis</div>
           </div>
 
-          <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
-            <div className="flex items-center gap-2 text-slate-400 text-xs mb-1">
-              <ShieldCheck className="w-4 h-4 text-indigo-400" />
-              <span>Diagnostic Pipeline</span>
+          <div className="p-4 rounded-lg bg-zinc-900 border border-zinc-800">
+            <div className="flex items-center gap-2 text-zinc-400 text-xs mb-1 font-mono">
+              <Cpu className="w-3.5 h-3.5 text-zinc-400" />
+              <span>Diagnostic Engine</span>
             </div>
-            <div className="text-sm font-semibold text-slate-200 mt-1">Autonomous RCA</div>
+            <div className="text-sm font-semibold text-zinc-200 mt-1 font-mono">Autonomous RCA</div>
           </div>
         </div>
 
         {/* Сетка карточек микросервисов */}
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-bold text-slate-100">Live Microservices Telemetry</h2>
-            <p className="text-xs text-slate-400">
+            <h2 className="text-base font-semibold text-zinc-100 font-mono">
+              Live Microservices Telemetry
+            </h2>
+            <p className="text-xs text-zinc-400 font-mono mt-0.5">
               Live WebSocket metrics stream updated every 5 seconds
             </p>
           </div>
@@ -285,15 +309,15 @@ export function App() {
       {/* Модальное окно детального разбора инцидента */}
       <IncidentModal
         node={modalNode}
-        diagnosis={activeIncident?.aiDiagnosis ?? null}
+        diagnosis={modalNode ? incidents[modalNode.id]?.aiDiagnosis ?? null : null}
         isOpen={modalNode !== null}
         onClose={() => setModalNode(null)}
         onRestore={handleRestoreNode}
       />
 
-      {/* Профессиональный подвал без лишних упоминаний */}
-      <footer className="border-t border-slate-900 py-6 text-center text-xs text-slate-500">
-        NexusPulse v2.0 • Distributed Observability Platform • Engineered by Aleksandr Weber
+      {/* Подвал без личных имен и лишнего шума */}
+      <footer className="border-t border-zinc-900 py-6 text-center text-xs font-mono text-zinc-400">
+        NexusPulse v2.0 • Distributed Observability &amp; Telemetry Platform
       </footer>
     </div>
   );
