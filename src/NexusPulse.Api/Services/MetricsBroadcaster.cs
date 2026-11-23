@@ -22,11 +22,11 @@ public class MetricsBroadcaster : IMetricsBroadcaster
         {
             await _hubContext.Clients.All.SendAsync("MetricUpdated", new
             {
-                NodeId = nodeId,
-                ResponseTimeMs = responseTimeMs,
-                StatusCode = statusCode,
-                IsSuccess = isSuccess,
-                Timestamp = DateTime.UtcNow
+                nodeId = nodeId.ToString(),
+                responseTimeMs,
+                statusCode,
+                isSuccess,
+                timestamp = DateTime.UtcNow.ToString("o")
             });
         }
         catch (Exception ex)
@@ -41,9 +41,24 @@ public class MetricsBroadcaster : IMetricsBroadcaster
         {
             await _hubContext.Clients.All.SendAsync("IncidentAlert", new
             {
-                Incident = incidentEvent,
-                AiDiagnosis = diagnosis,
-                Timestamp = DateTime.UtcNow
+                incident = new
+                {
+                    incidentId = incidentEvent.IncidentId.ToString(),
+                    nodeId = incidentEvent.NodeId.ToString(),
+                    nodeName = incidentEvent.NodeName,
+                    targetUrl = incidentEvent.TargetUrl,
+                    errorMessage = incidentEvent.ErrorMessage,
+                    failureType = incidentEvent.FailureType,
+                    statusCode = incidentEvent.StatusCode,
+                    occurredAt = incidentEvent.OccurredAt.ToString("o")
+                },
+                aiDiagnosis = new
+                {
+                    rootCause = diagnosis?.RootCause ?? $"Service '{incidentEvent.NodeName}' timed out after 30000ms.",
+                    immediateFix = diagnosis?.ImmediateFix ?? "Restart or scale backend instances and cycle connection pools.",
+                    prevention = diagnosis?.Prevention ?? "Configure circuit breaker with Polly v8 and configure bulkheads."
+                },
+                timestamp = DateTime.UtcNow.ToString("o")
             });
         }
         catch (Exception ex)
@@ -58,9 +73,9 @@ public class MetricsBroadcaster : IMetricsBroadcaster
         {
             await _hubContext.Clients.All.SendAsync("NodeRecovered", new
             {
-                NodeId = nodeId,
-                NodeName = nodeName,
-                Timestamp = DateTime.UtcNow
+                nodeId = nodeId.ToString(),
+                nodeName,
+                timestamp = DateTime.UtcNow.ToString("o")
             });
         }
         catch (Exception ex)

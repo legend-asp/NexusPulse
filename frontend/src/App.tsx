@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { MonitoredNode, MetricUpdatePayload, IncidentAlertPayload, NodeRecoveredPayload } from './types';
 import { useSignalR } from './hooks/useSignalR';
 import { Header } from './components/Header';
@@ -48,13 +48,27 @@ export function App() {
   const [incidents, setIncidents] = useState<Record<string, IncidentAlertPayload>>({});
   const [modalNode, setModalNode] = useState<MonitoredNode | null>(null);
 
+  // Реф для предотвращения случайного сброса упавшей ноды фоновым SignalR-пульсом
+  const incidentsRef = useRef(incidents);
+  useEffect(() => {
+    incidentsRef.current = incidents;
+  }, [incidents]);
+
   // 1. Загрузка нод из бэкенда при монтировании
   useEffect(() => {
     fetch('http://localhost:5199/api/nodes')
       .then((res) => (res.ok ? res.json() : null))
       .then((data: MonitoredNode[] | null) => {
         if (data && data.length > 0) {
-          setNodes(data);
+          setNodes(() =>
+            data.map((serverNode) => {
+              const activeIncident = incidentsRef.current[serverNode.id.toLowerCase()];
+              return {
+                ...serverNode,
+                healthStatus: activeIncident ? 'Down' : serverNode.healthStatus,
+              };
+            })
+          );
         }
       })
       .catch(() => {
@@ -64,14 +78,20 @@ export function App() {
 
   // 2. Обработка живой телеметрии из SignalR
   const handleMetricUpdated = useCallback((data: MetricUpdatePayload) => {
+    const rawData = data as any;
+    const nodeId = (rawData.nodeId || rawData.NodeId || '').toLowerCase();
+    if (!nodeId) return;
+
     setNodes((prev) =>
       prev.map((node) => {
-        if (node.id === data.nodeId) {
+        if (node.id.toLowerCase() === nodeId) {
+          const hasActiveIncident = !!incidentsRef.current[node.id.toLowerCase()];
+          const isSuccess = rawData.isSuccess ?? rawData.IsSuccess ?? true;
           return {
             ...node,
-            healthStatus: data.isSuccess ? 'Healthy' : 'Down',
-            lastLatencyMs: data.responseTimeMs,
-            lastCheckedAt: data.timestamp,
+            healthStatus: hasActiveIncident ? 'Down' : isSuccess ? 'Healthy' : 'Down',
+            lastLatencyMs: rawData.responseTimeMs ?? rawData.ResponseTimeMs ?? node.lastLatencyMs,
+            lastCheckedAt: rawData.timestamp ?? rawData.Timestamp ?? new Date().toISOString(),
           };
         }
         return node;
@@ -81,18 +101,38 @@ export function App() {
 
   // 3. Обработка входящего инцидента с анализом
   const handleIncidentAlert = useCallback((data: IncidentAlertPayload) => {
+    const raw = data as any;
+    const rawIncident = raw.incident || raw.Incident || {};
+    const nodeId = (rawIncident.nodeId || rawIncident.NodeId || '').toLowerCase();
+    if (!nodeId) return;
+
+    const normalizedPayload: IncidentAlertPayload = {
+      incident: {
+        incidentId: rawIncident.incidentId || rawIncident.IncidentId || 'inc-' + Date.now(),
+        nodeId: nodeId,
+        nodeName: rawIncident.nodeName || rawIncident.NodeName || 'Microservice',
+        targetUrl: rawIncident.targetUrl || rawIncident.TargetUrl || '',
+        errorMessage: rawIncident.errorMessage || rawIncident.ErrorMessage || 'HTTP 504 Gateway Timeout',
+        failureType: rawIncident.failureType || rawIncident.FailureType || 'HttpTimeout',
+        statusCode: rawIncident.statusCode ?? rawIncident.StatusCode ?? 504,
+        occurredAt: rawIncident.occurredAt || rawIncident.OccurredAt || new Date().toISOString(),
+      },
+      aiDiagnosis: raw.aiDiagnosis || raw.AiDiagnosis || null,
+      timestamp: raw.timestamp || raw.Timestamp || new Date().toISOString(),
+    };
+
     setIncidents((prev) => ({
       ...prev,
-      [data.incident.nodeId]: data,
+      [nodeId]: normalizedPayload,
     }));
 
     setNodes((prev) =>
       prev.map((node) => {
-        if (node.id === data.incident.nodeId) {
+        if (node.id.toLowerCase() === nodeId) {
           return {
             ...node,
             healthStatus: 'Down',
-            lastCheckedAt: data.timestamp,
+            lastCheckedAt: normalizedPayload.timestamp,
           };
         }
         return node;
@@ -102,81 +142,98 @@ export function App() {
 
   // 4. Обработка восстановления ноды
   const handleNodeRecovered = useCallback((data: NodeRecoveredPayload) => {
+    const raw = data as any;
+    const nodeId = (raw.nodeId || raw.NodeId || '').toLowerCase();
+    if (!nodeId) return;
+
     setIncidents((prev) => {
       const next = { ...prev };
-      delete next[data.nodeId];
+      delete next[nodeId];
       return next;
     });
 
     setNodes((prev) =>
       prev.map((node) => {
-        if (node.id === data.nodeId) {
+        if (node.id.toLowerCase() === nodeId) {
           return {
             ...node,
             healthStatus: 'Healthy',
-            lastCheckedAt: data.timestamp,
+            lastLatencyMs: Math.floor(Math.random() * 20) + 15,
+            lastCheckedAt: new Date().toISOString(),
           };
         }
         return node;
       })
     );
 
-    setModalNode((curr) => (curr?.id === data.nodeId ? null : curr));
+    setModalNode((curr) => (curr?.id.toLowerCase() === nodeId ? null : curr));
   }, []);
 
   // 5. SignalR хук
   const { isConnected } = useSignalR(handleMetricUpdated, handleIncidentAlert, handleNodeRecovered);
 
-  // 6. Симуляция сбоя по клику на кнопку
+  // 6. МГНОВЕННАЯ симуляция сбоя с оптимистичным обновлением
   const handleSimulateFailure = async (nodeId: string) => {
-    const targetNode = nodes.find((n) => n.id === nodeId);
+    const targetNode = nodes.find((n) => n.id.toLowerCase() === nodeId.toLowerCase());
     if (!targetNode) return;
 
+    const lowerId = targetNode.id.toLowerCase();
+
+    // 1. Мгновенно переключаем состояние ноды в UI (0 задержки)
+    const initialIncident: IncidentAlertPayload = {
+      incident: {
+        incidentId: 'inc-' + Date.now(),
+        nodeId: targetNode.id,
+        nodeName: targetNode.name,
+        targetUrl: targetNode.targetUrl,
+        errorMessage: 'HTTP 504 Gateway Timeout: Upstream dependency connection aborted after 30000ms',
+        failureType: 'HttpTimeout',
+        statusCode: 504,
+        occurredAt: new Date().toISOString(),
+      },
+      aiDiagnosis: {
+        rootCause: `The ${targetNode.name} failed to complete its upstream transaction within 30000ms due to connection saturation.`,
+        immediateFix: 'Shed upstream socket queue, inspect container memory limits, and restart worker instances.',
+        prevention: 'Configure Keyed Polly v8 circuit breaker with 5s timeout and bulkheads isolating external APIs.',
+      },
+      timestamp: new Date().toISOString(),
+    };
+
+    setIncidents((prev) => ({
+      ...prev,
+      [lowerId]: initialIncident,
+    }));
+
+    setNodes((prev) =>
+      prev.map((n) =>
+        n.id.toLowerCase() === lowerId
+          ? { ...n, healthStatus: 'Down', lastLatencyMs: 0, lastCheckedAt: new Date().toISOString() }
+          : n
+      )
+    );
+
+    // 2. Отправляем запрос в бэкенд для Telegram-алерта и Gemini
     try {
-      const res = await fetch(`http://localhost:5199/api/nodes/${nodeId}/simulate-failure`, {
+      await fetch(`http://localhost:5199/api/nodes/${targetNode.id}/simulate-failure`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          errorMessage: `HTTP 504 Gateway Timeout: Upstream dependency connection aborted after 30000ms`,
+          errorMessage: 'HTTP 504 Gateway Timeout: Upstream dependency connection aborted after 30000ms',
           failureType: 'HttpTimeout',
           statusCode: 504,
         }),
       });
-
-      if (!res.ok) throw new Error('API request failed');
-    } catch {
-      // Изолированный fallback для мгновенного UI-отклика
-      handleIncidentAlert({
-        incident: {
-          incidentId: 'inc-' + Date.now(),
-          nodeId: targetNode.id,
-          nodeName: targetNode.name,
-          targetUrl: targetNode.targetUrl,
-          errorMessage: 'HTTP 504 Gateway Timeout: Upstream dependency connection aborted after 30000ms',
-          failureType: 'HttpTimeout',
-          statusCode: 504,
-          occurredAt: new Date().toISOString(),
-        },
-        aiDiagnosis: {
-          rootCause: `The ${targetNode.name} failed to complete its upstream database transaction within the 30-second timeout window due to connection pool saturation or a deadlocked query.`,
-          immediateFix: 'Restart or horizontally scale backend instances and cycle database connection pools.',
-          prevention: 'Apply circuit breaker with Polly v8 and configure bulkheads to isolate slow upstream transactions.',
-        },
-        timestamp: new Date().toISOString(),
-      });
-    }
+    } catch { }
   };
 
-  // 7. Восстановление конкретной ноды
+  // 7. Мгновенное восстановление конкретной ноды
   const handleRestoreNode = async (nodeId: string) => {
-    // Оповещаем бэкенд для отправки уведомления в Telegram
-    try {
-      await fetch(`http://localhost:5199/api/nodes/${nodeId}/restore`, { method: 'POST' });
-    } catch { }
+    const lowerId = nodeId.toLowerCase();
 
+    // Оптимистичное обновление UI
     setNodes((prev) =>
       prev.map((node) => {
-        if (node.id === nodeId) {
+        if (node.id.toLowerCase() === lowerId) {
           return {
             ...node,
             healthStatus: 'Healthy',
@@ -190,23 +247,23 @@ export function App() {
 
     setIncidents((prev) => {
       const next = { ...prev };
-      delete next[nodeId];
+      delete next[lowerId];
       return next;
     });
 
-    if (modalNode?.id === nodeId) {
+    if (modalNode?.id.toLowerCase() === lowerId) {
       setModalNode(null);
     }
+
+    // Оповещаем бэкенд для Telegram-уведомления
+    try {
+      await fetch(`http://localhost:5199/api/nodes/${nodeId}/restore`, { method: 'POST' });
+    } catch { }
   };
 
   // 8. Восстановление всех упавших нод
   const handleResolveAll = async () => {
     const downNodes = nodes.filter((n) => n.healthStatus === 'Down');
-    for (const node of downNodes) {
-      try {
-        await fetch(`http://localhost:5199/api/nodes/${node.id}/restore`, { method: 'POST' });
-      } catch { }
-    }
 
     setNodes((prev) =>
       prev.map((n) => ({
@@ -218,13 +275,19 @@ export function App() {
     );
     setIncidents({});
     setModalNode(null);
+
+    for (const node of downNodes) {
+      try {
+        await fetch(`http://localhost:5199/api/nodes/${node.id}/restore`, { method: 'POST' });
+      } catch { }
+    }
   };
 
   const healthyNodesCount = nodes.filter((n) => n.healthStatus === 'Healthy').length;
   const healthPercent = Math.round((healthyNodesCount / nodes.length) * 100);
   const activeDownCount = nodes.filter((n) => n.healthStatus === 'Down').length;
 
-  // Самый свежий инцидент для баннера
+  // Самый свежий инцидент для верхнего баннера
   const latestIncident = useMemo(() => {
     const list = Object.values(incidents);
     return list.length > 0 ? list[list.length - 1] : null;
@@ -246,7 +309,9 @@ export function App() {
           activeCount={activeDownCount}
           onResolve={handleResolveAll}
           onViewModal={() => {
-            const downNode = nodes.find((n) => n.id === latestIncident?.incident.nodeId);
+            const downNode = nodes.find(
+              (n) => n.id.toLowerCase() === latestIncident?.incident.nodeId.toLowerCase()
+            );
             if (downNode) setModalNode(downNode);
           }}
         />
@@ -336,7 +401,7 @@ export function App() {
       {/* Модальное окно детального разбора инцидента */}
       <IncidentModal
         node={modalNode}
-        diagnosis={modalNode ? incidents[modalNode.id]?.aiDiagnosis ?? null : null}
+        diagnosis={modalNode ? incidents[modalNode.id.toLowerCase()]?.aiDiagnosis ?? null : null}
         isOpen={modalNode !== null}
         onClose={() => setModalNode(null)}
         onRestore={handleRestoreNode}
