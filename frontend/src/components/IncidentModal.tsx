@@ -76,7 +76,11 @@ export const IncidentModal: React.FC<IncidentModalProps> = ({
               </div>
               <p className="text-zinc-300 font-sans text-xs leading-relaxed">
                 {diagnosis?.rootCause ??
-                  `The ${node.name} failed to respond within the 30-second gateway timeout threshold due to database connection pool exhaustion or an upstream deadlock.`}
+                  (node.name.includes('Payment')
+                    ? 'Upstream banking acquiring gateway timed out after 30000ms during credit card tokenization due to acquiring bank thread-pool exhaustion.'
+                    : node.name.includes('Billing')
+                    ? 'PostgreSQL transaction deadlock detected during recurring subscription invoice generation under heavy row lock contention.'
+                    : 'OAuth2 / JWT token validation cluster exhausted available HTTP connection sockets due to sudden authentication spike.')}
               </p>
             </div>
 

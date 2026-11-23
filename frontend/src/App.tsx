@@ -43,6 +43,28 @@ const INITIAL_NODES: MonitoredNode[] = [
   },
 ];
 
+const getNodeDiagnosis = (node: MonitoredNode) => {
+  if (node.name.includes('Payment')) {
+    return {
+      rootCause: 'Upstream banking acquiring gateway timed out after 30000ms during credit card tokenization due to acquiring bank thread-pool exhaustion.',
+      immediateFix: 'Trip Polly v8 Circuit Breaker to OPEN, failover to secondary merchant gateway, and drain socket queue.',
+      prevention: 'Configure Keyed Polly v8 resilience pipeline with Jitter Exponential Retry and isolated bulkhead pools.'
+    };
+  }
+  if (node.name.includes('Billing')) {
+    return {
+      rootCause: 'PostgreSQL transaction deadlock detected during recurring subscription invoice generation under heavy row lock contention.',
+      immediateFix: 'Terminate blocking backend transaction PID, cycle read-replica connection pools, and restart worker pods.',
+      prevention: 'Enforce strict statement_timeout (3s) on billing queries and migrate bulk invoice aggregation to asynchronous background jobs.'
+    };
+  }
+  return {
+    rootCause: 'OAuth2 / JWT token validation cluster exhausted available HTTP connection sockets due to sudden authentication spike.',
+    immediateFix: 'Increase SocketsHttpHandler connection pool limit, restart auth pods, and enable distributed Redis token caching.',
+    prevention: 'Deploy rate limiting at edge reverse proxy and configure auto-scaling group with min 3 replicas.'
+  };
+};
+
 export function App() {
   const [nodes, setNodes] = useState<MonitoredNode[]>(INITIAL_NODES);
   const [incidents, setIncidents] = useState<Record<string, IncidentAlertPayload>>({});
@@ -191,11 +213,7 @@ export function App() {
         statusCode: 504,
         occurredAt: new Date().toISOString(),
       },
-      aiDiagnosis: {
-        rootCause: `The ${targetNode.name} failed to complete its upstream transaction within 30000ms due to connection saturation.`,
-        immediateFix: 'Shed upstream socket queue, inspect container memory limits, and restart worker instances.',
-        prevention: 'Configure Keyed Polly v8 circuit breaker with 5s timeout and bulkheads isolating external APIs.',
-      },
+      aiDiagnosis: getNodeDiagnosis(targetNode),
       timestamp: new Date().toISOString(),
     };
 
