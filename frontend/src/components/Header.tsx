@@ -8,7 +8,7 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({ isConnected, activeIncidentsCount }) => {
   return (
-    <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur-md sticky top-0 z-50">
+    <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur-md sticky top-0 z-40">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
         {/* Логотип и Название */}
         <div className="flex items-center gap-3">
@@ -19,11 +19,11 @@ export const Header: React.FC<HeaderProps> = ({ isConnected, activeIncidentsCoun
             <div className="flex items-center gap-2">
               <span className="font-bold text-lg text-slate-100 tracking-tight">NexusPulse</span>
               <span className="text-[10px] font-mono uppercase bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-1.5 py-0.5 rounded">
-                v2.0 AI
+                v2.0
               </span>
             </div>
             <p className="text-xs text-slate-400 hidden sm:block">
-              Distributed Observability & AI Incident Response
+              Distributed Observability & Autonomous Incident Response
             </p>
           </div>
         </div>

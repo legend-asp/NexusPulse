@@ -1,13 +1,18 @@
 import React from 'react';
 import type { IncidentAlertPayload } from '../types';
-import { AlertTriangle, Sparkles, CheckCircle2 } from 'lucide-react';
+import { AlertTriangle, Sparkles, CheckCircle2, ChevronRight } from 'lucide-react';
 
 interface IncidentBannerProps {
   incidentAlert: IncidentAlertPayload | null;
   onResolve: () => void;
+  onViewModal?: () => void;
 }
 
-export const IncidentBanner: React.FC<IncidentBannerProps> = ({ incidentAlert, onResolve }) => {
+export const IncidentBanner: React.FC<IncidentBannerProps> = ({
+  incidentAlert,
+  onResolve,
+  onViewModal,
+}) => {
   if (!incidentAlert) return null;
 
   const { incident, aiDiagnosis } = incidentAlert;
@@ -36,22 +41,34 @@ export const IncidentBanner: React.FC<IncidentBannerProps> = ({ incidentAlert, o
           </div>
         </div>
 
-        {/* Кнопка ручного восстановления / подтверждения */}
-        <button
-          onClick={onResolve}
-          className="self-start sm:self-auto inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 transition duration-200"
-        >
-          <CheckCircle2 className="w-4 h-4" />
-          Resolve Incident
-        </button>
+        {/* Кнопки действий */}
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          {onViewModal && (
+            <button
+              onClick={onViewModal}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 transition duration-200"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Detailed Breakdown
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+          <button
+            onClick={onResolve}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 transition duration-200"
+          >
+            <CheckCircle2 className="w-4 h-4" />
+            Resolve All
+          </button>
+        </div>
       </div>
 
-      {/* Карточка Google Gemini AI Diagnostics */}
+      {/* Карточка Root Cause Analysis */}
       {aiDiagnosis && (
         <div className="mt-5 rounded-lg border border-indigo-500/30 bg-slate-950/70 p-4">
           <div className="flex items-center gap-2 mb-3 text-indigo-400 font-semibold text-xs tracking-wide">
             <Sparkles className="w-4 h-4" />
-            <span>AI ROOT CAUSE & REMEDIATION (Google Gemini 3.1 Flash-Lite)</span>
+            <span>AUTONOMOUS ROOT CAUSE ANALYSIS & REMEDIATION (RCA ENGINE)</span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">

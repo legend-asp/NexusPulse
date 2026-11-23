@@ -4,6 +4,7 @@ import { useSignalR } from './hooks/useSignalR';
 import { Header } from './components/Header';
 import { NodeCard } from './components/NodeCard';
 import { IncidentBanner } from './components/IncidentBanner';
+import { IncidentModal } from './components/IncidentModal';
 import { ShieldCheck, Activity, Layers, Server } from 'lucide-react';
 
 const INITIAL_NODES: MonitoredNode[] = [
@@ -45,6 +46,7 @@ const INITIAL_NODES: MonitoredNode[] = [
 export function App() {
   const [nodes, setNodes] = useState<MonitoredNode[]>(INITIAL_NODES);
   const [activeIncident, setActiveIncident] = useState<IncidentAlertPayload | null>(null);
+  const [modalNode, setModalNode] = useState<MonitoredNode | null>(null);
 
   // 1. Попытка загрузить актуальные ноды из бэкенда
   useEffect(() => {
@@ -77,7 +79,7 @@ export function App() {
     );
   }, []);
 
-  // 3. Обработка входящего инцидента с анализом от Gemini
+  // 3. Обработка входящего инцидента с анализом
   const handleIncidentAlert = useCallback((data: IncidentAlertPayload) => {
     setActiveIncident(data);
     setNodes((prev) =>
@@ -109,6 +111,7 @@ export function App() {
         return node;
       })
     );
+    setModalNode((curr) => (curr?.id === data.nodeId ? null : curr));
   }, []);
 
   // 5. Подключение хука SignalR
@@ -171,10 +174,13 @@ export function App() {
     );
 
     setActiveIncident((curr) => {
-      // Если все остальные ноды здоровы — гасим баннер инцидента
       const remainingDown = nodes.filter((n) => n.id !== nodeId && n.healthStatus === 'Down');
       return remainingDown.length === 0 ? null : curr?.incident.nodeId === nodeId ? null : curr;
     });
+
+    if (modalNode?.id === nodeId) {
+      setModalNode(null);
+    }
   };
 
   // 8. Восстановление всех нод по кнопке на баннере инцидента
@@ -188,6 +194,7 @@ export function App() {
       }))
     );
     setActiveIncident(null);
+    setModalNode(null);
   };
 
   const healthyNodesCount = nodes.filter((n) => n.healthStatus === 'Healthy').length;
@@ -201,8 +208,15 @@ export function App() {
 
       {/* Основной контент */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Баннер активного инцидента с рекомендациями Gemini */}
-        <IncidentBanner incidentAlert={activeIncident} onResolve={handleResolveIncident} />
+        {/* Баннер активного инцидента */}
+        <IncidentBanner
+          incidentAlert={activeIncident}
+          onResolve={handleResolveIncident}
+          onViewModal={() => {
+            const downNode = nodes.find((n) => n.id === activeIncident?.incident.nodeId);
+            if (downNode) setModalNode(downNode);
+          }}
+        />
 
         {/* Сводная панель метрик системы */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
@@ -239,9 +253,9 @@ export function App() {
           <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
             <div className="flex items-center gap-2 text-slate-400 text-xs mb-1">
               <ShieldCheck className="w-4 h-4 text-indigo-400" />
-              <span>AI Diagnostics</span>
+              <span>Diagnostic Pipeline</span>
             </div>
-            <div className="text-sm font-semibold text-slate-200 mt-1">Gemini 3.1 Flash</div>
+            <div className="text-sm font-semibold text-slate-200 mt-1">Autonomous RCA</div>
           </div>
         </div>
 
@@ -262,14 +276,24 @@ export function App() {
               node={node}
               onSimulateFailure={handleSimulateFailure}
               onRestoreNode={handleRestoreNode}
+              onViewAnalysis={(target) => setModalNode(target)}
             />
           ))}
         </div>
       </main>
 
-      {/* Подвал */}
+      {/* Модальное окно детального разбора инцидента */}
+      <IncidentModal
+        node={modalNode}
+        diagnosis={activeIncident?.aiDiagnosis ?? null}
+        isOpen={modalNode !== null}
+        onClose={() => setModalNode(null)}
+        onRestore={handleRestoreNode}
+      />
+
+      {/* Профессиональный подвал без лишних упоминаний */}
       <footer className="border-t border-slate-900 py-6 text-center text-xs text-slate-500">
-        NexusPulse v2.0 • Distributed Observability Platform • Built with .NET 9, React 19 & Google Gemini AI
+        NexusPulse v2.0 • Distributed Observability Platform • Engineered by Aleksandr Weber
       </footer>
     </div>
   );

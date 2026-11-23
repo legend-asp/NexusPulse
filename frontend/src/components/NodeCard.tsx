@@ -1,14 +1,20 @@
 import React from 'react';
 import type { MonitoredNode } from '../types';
-import { Server, Activity, AlertCircle, CheckCircle2, Flame, ExternalLink, RotateCcw } from 'lucide-react';
+import { Server, Activity, AlertCircle, CheckCircle2, Flame, ExternalLink, RotateCcw, Sparkles } from 'lucide-react';
 
 export interface NodeCardProps {
   node: MonitoredNode;
   onSimulateFailure: (id: string) => void;
   onRestoreNode: (id: string) => void;
+  onViewAnalysis: (node: MonitoredNode) => void;
 }
 
-export const NodeCard: React.FC<NodeCardProps> = ({ node, onSimulateFailure, onRestoreNode }) => {
+export const NodeCard: React.FC<NodeCardProps> = ({
+  node,
+  onSimulateFailure,
+  onRestoreNode,
+  onViewAnalysis,
+}) => {
   const status = node.healthStatus || 'Healthy';
   const isDown = status === 'Down';
   const isDegraded = status === 'Degraded';
@@ -20,25 +26,25 @@ export const NodeCard: React.FC<NodeCardProps> = ({ node, onSimulateFailure, onR
         return {
           icon: <CheckCircle2 className="w-3.5 h-3.5" />,
           label: 'HEALTHY',
-          classes: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+          classes: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
         };
       case 'Degraded':
         return {
           icon: <Activity className="w-3.5 h-3.5" />,
           label: 'DEGRADED',
-          classes: 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+          classes: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
         };
       case 'Down':
         return {
           icon: <AlertCircle className="w-3.5 h-3.5" />,
           label: 'DOWN',
-          classes: 'bg-rose-500/10 text-rose-400 border-rose-500/40 animate-pulse'
+          classes: 'bg-rose-500/10 text-rose-400 border-rose-500/40 animate-pulse',
         };
       default:
         return {
           icon: <CheckCircle2 className="w-3.5 h-3.5" />,
           label: status,
-          classes: 'bg-slate-500/10 text-slate-400 border-slate-500/20'
+          classes: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
         };
     }
   };
@@ -125,16 +131,26 @@ export const NodeCard: React.FC<NodeCardProps> = ({ node, onSimulateFailure, onR
         </div>
       </div>
 
-      {/* Нижняя часть: Кнопка действия (Simulate Outage ИЛИ Restore Service) */}
+      {/* Нижняя часть: Кнопки действий */}
       {isDown ? (
-        <button
-          type="button"
-          onClick={() => onRestoreNode(node.id)}
-          className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border py-2.5 px-4 text-xs font-semibold transition-all duration-200 bg-emerald-500/10 hover:bg-emerald-600 text-emerald-300 hover:text-white border-emerald-500/30 hover:border-emerald-600 shadow-sm active:scale-[0.98]"
-        >
-          <RotateCcw className="w-3.5 h-3.5 text-emerald-400 group-hover:text-white" />
-          Restore Node
-        </button>
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => onViewAnalysis(node)}
+            className="flex items-center justify-center gap-1.5 rounded-lg border py-2.5 px-3 text-xs font-semibold transition-all duration-200 bg-indigo-500/10 hover:bg-indigo-600 text-indigo-300 hover:text-white border-indigo-500/30 hover:border-indigo-600 shadow-sm active:scale-[0.98]"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-indigo-400 group-hover:text-white" />
+            AI Analysis
+          </button>
+          <button
+            type="button"
+            onClick={() => onRestoreNode(node.id)}
+            className="flex items-center justify-center gap-1.5 rounded-lg border py-2.5 px-3 text-xs font-semibold transition-all duration-200 bg-emerald-500/10 hover:bg-emerald-600 text-emerald-300 hover:text-white border-emerald-500/30 hover:border-emerald-600 shadow-sm active:scale-[0.98]"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-emerald-400 group-hover:text-white" />
+            Restore
+          </button>
+        </div>
       ) : (
         <button
           type="button"
