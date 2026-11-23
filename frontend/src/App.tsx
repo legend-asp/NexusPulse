@@ -48,7 +48,7 @@ export function App() {
   const [incidents, setIncidents] = useState<Record<string, IncidentAlertPayload>>({});
   const [modalNode, setModalNode] = useState<MonitoredNode | null>(null);
 
-  // 1. Попытка загрузить актуальные ноды из бэкенда
+  // 1. Загрузка нод из бэкенда при монтировании
   useEffect(() => {
     fetch('http://localhost:5199/api/nodes')
       .then((res) => (res.ok ? res.json() : null))
@@ -58,7 +58,7 @@ export function App() {
         }
       })
       .catch(() => {
-        // Если бэкенд оффлайн — используются встроенные мок-ноды
+        // Fallback: мок-ноды
       });
   }, []);
 
@@ -79,7 +79,7 @@ export function App() {
     );
   }, []);
 
-  // 3. Обработка входящего инцидента с детальным анализом
+  // 3. Обработка входящего инцидента с анализом
   const handleIncidentAlert = useCallback((data: IncidentAlertPayload) => {
     setIncidents((prev) => ({
       ...prev,
@@ -124,7 +124,7 @@ export function App() {
     setModalNode((curr) => (curr?.id === data.nodeId ? null : curr));
   }, []);
 
-  // 5. Подключение хука SignalR
+  // 5. SignalR хук
   const { isConnected } = useSignalR(handleMetricUpdated, handleIncidentAlert, handleNodeRecovered);
 
   // 6. Симуляция сбоя по клику на кнопку
@@ -168,7 +168,12 @@ export function App() {
   };
 
   // 7. Восстановление конкретной ноды
-  const handleRestoreNode = (nodeId: string) => {
+  const handleRestoreNode = async (nodeId: string) => {
+    // Оповещаем бэкенд для отправки уведомления в Telegram
+    try {
+      await fetch(`http://localhost:5199/api/nodes/${nodeId}/restore`, { method: 'POST' });
+    } catch { }
+
     setNodes((prev) =>
       prev.map((node) => {
         if (node.id === nodeId) {
@@ -194,8 +199,15 @@ export function App() {
     }
   };
 
-  // 8. Восстановление всех упавших нод сразу
-  const handleResolveAll = () => {
+  // 8. Восстановление всех упавших нод
+  const handleResolveAll = async () => {
+    const downNodes = nodes.filter((n) => n.healthStatus === 'Down');
+    for (const node of downNodes) {
+      try {
+        await fetch(`http://localhost:5199/api/nodes/${node.id}/restore`, { method: 'POST' });
+      } catch { }
+    }
+
     setNodes((prev) =>
       prev.map((n) => ({
         ...n,
@@ -212,19 +224,22 @@ export function App() {
   const healthPercent = Math.round((healthyNodesCount / nodes.length) * 100);
   const activeDownCount = nodes.filter((n) => n.healthStatus === 'Down').length;
 
-  // Самый свежий инцидент для верхнего баннера
+  // Самый свежий инцидент для баннера
   const latestIncident = useMemo(() => {
     const list = Object.values(incidents);
     return list.length > 0 ? list[list.length - 1] : null;
   }, [incidents]);
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans selection:bg-zinc-800 selection:text-zinc-100">
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans selection:bg-zinc-800 selection:text-zinc-100 relative">
+      {/* Деликатное фоновое свечение в стиле Datadog/Linear */}
+      <div className="fixed inset-0 pointer-events-none bg-[radial-gradient(ellipse_80%_50%_at_50%_-10%,rgba(16,185,129,0.05),rgba(0,0,0,0))] z-0" />
+
       {/* Шапка дашборда */}
       <Header isConnected={isConnected} activeIncidentsCount={activeDownCount} />
 
       {/* Основной контент */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 relative z-10">
         {/* Баннер активного инцидента */}
         <IncidentBanner
           incidentAlert={latestIncident}
@@ -238,53 +253,65 @@ export function App() {
 
         {/* Сводная панель метрик системы */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          <div className="p-4 rounded-lg bg-zinc-900 border border-zinc-800">
-            <div className="flex items-center gap-2 text-zinc-400 text-xs mb-1 font-mono">
-              <Server className="w-3.5 h-3.5 text-zinc-400" />
-              <span>Monitored Nodes</span>
+          <div className="p-4 rounded-xl bg-zinc-900/40 backdrop-blur-md border border-zinc-800/80 hover:border-zinc-700/80 transition-all duration-200 group">
+            <div className="flex items-center justify-between text-zinc-400 text-xs mb-1 font-mono">
+              <div className="flex items-center gap-2">
+                <Server className="w-3.5 h-3.5 text-zinc-400" />
+                <span>Monitored Nodes</span>
+              </div>
+              <span className="text-[10px] text-zinc-400 bg-zinc-800/80 px-1.5 py-0.5 rounded">Auto</span>
             </div>
-            <div className="text-2xl font-bold font-mono text-zinc-100">{nodes.length}</div>
+            <div className="text-2xl font-bold font-mono text-zinc-100 mt-1">{nodes.length}</div>
           </div>
 
-          <div className="p-4 rounded-lg bg-zinc-900 border border-zinc-800">
-            <div className="flex items-center gap-2 text-zinc-400 text-xs mb-1 font-mono">
-              <Activity className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Cluster Health</span>
+          <div className="p-4 rounded-xl bg-zinc-900/40 backdrop-blur-md border border-zinc-800/80 hover:border-zinc-700/80 transition-all duration-200 group">
+            <div className="flex items-center justify-between text-zinc-400 text-xs mb-1 font-mono">
+              <div className="flex items-center gap-2">
+                <Activity className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Cluster Health</span>
+              </div>
+              <span className="text-[10px] text-emerald-400/80 bg-emerald-500/10 px-1.5 py-0.5 rounded">SLA</span>
             </div>
             <div
-              className={`text-2xl font-bold font-mono ${
+              className={`text-2xl font-bold font-mono mt-1 ${
                 healthPercent === 100
                   ? 'text-emerald-400'
                   : healthPercent > 50
                   ? 'text-amber-400'
-                  : 'text-red-400'
+                  : 'text-rose-400'
               }`}
             >
               {healthPercent}%
             </div>
           </div>
 
-          <div className="p-4 rounded-lg bg-zinc-900 border border-zinc-800">
-            <div className="flex items-center gap-2 text-zinc-400 text-xs mb-1 font-mono">
-              <Layers className="w-3.5 h-3.5 text-zinc-400" />
-              <span>Resilience Engine</span>
+          <div className="p-4 rounded-xl bg-zinc-900/40 backdrop-blur-md border border-zinc-800/80 hover:border-zinc-700/80 transition-all duration-200 group">
+            <div className="flex items-center justify-between text-zinc-400 text-xs mb-1 font-mono">
+              <div className="flex items-center gap-2">
+                <Layers className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Resilience Engine</span>
+              </div>
+              <span className="text-[10px] text-cyan-400/80 bg-cyan-500/10 px-1.5 py-0.5 rounded">Active</span>
             </div>
-            <div className="text-sm font-semibold text-zinc-200 mt-1 font-mono">Polly v8 + Redis</div>
+            <div className="text-sm font-semibold text-zinc-200 mt-2 font-mono">Polly v8 + Redis</div>
           </div>
 
-          <div className="p-4 rounded-lg bg-zinc-900 border border-zinc-800">
-            <div className="flex items-center gap-2 text-zinc-400 text-xs mb-1 font-mono">
-              <Cpu className="w-3.5 h-3.5 text-zinc-400" />
-              <span>Diagnostic Engine</span>
+          <div className="p-4 rounded-xl bg-zinc-900/40 backdrop-blur-md border border-zinc-800/80 hover:border-zinc-700/80 transition-all duration-200 group">
+            <div className="flex items-center justify-between text-zinc-400 text-xs mb-1 font-mono">
+              <div className="flex items-center gap-2">
+                <Cpu className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Diagnostic Engine</span>
+              </div>
+              <span className="text-[10px] text-indigo-400/80 bg-indigo-500/10 px-1.5 py-0.5 rounded">RCA</span>
             </div>
-            <div className="text-sm font-semibold text-zinc-200 mt-1 font-mono">Autonomous RCA</div>
+            <div className="text-sm font-semibold text-zinc-200 mt-2 font-mono">Autonomous RCA</div>
           </div>
         </div>
 
         {/* Сетка карточек микросервисов */}
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h2 className="text-base font-semibold text-zinc-100 font-mono">
+            <h2 className="text-base font-semibold text-zinc-100 font-mono tracking-tight">
               Live Microservices Telemetry
             </h2>
             <p className="text-xs text-zinc-400 font-mono mt-0.5">
@@ -316,7 +343,7 @@ export function App() {
       />
 
       {/* Подвал без личных имен и лишнего шума */}
-      <footer className="border-t border-zinc-900 py-6 text-center text-xs font-mono text-zinc-400">
+      <footer className="border-t border-zinc-900/80 py-6 text-center text-xs font-mono text-zinc-400 relative z-10">
         NexusPulse v2.0 • Distributed Observability &amp; Telemetry Platform
       </footer>
     </div>

@@ -49,7 +49,7 @@ public class TelegramBotNotifier : ITelegramNotifier
 
         if (diagnosis != null)
         {
-            message += $"🧠 <b>AI Diagnosis (Google Gemini):</b>\n" +
+            message += $"⚡ <b>Autonomous Root Cause Analysis:</b>\n" +
                        $"• <b>Root Cause:</b> {diagnosis.RootCause}\n" +
                        $"• <b>Immediate Fix:</b> {diagnosis.ImmediateFix}\n" +
                        $"• <b>Prevention:</b> {diagnosis.Prevention}\n";

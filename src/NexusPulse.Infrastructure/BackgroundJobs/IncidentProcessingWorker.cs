@@ -70,13 +70,20 @@ public class IncidentProcessingWorker : BackgroundService
             _logger.LogError(ex, "Failed to obtain AI diagnosis for incident {IncidentId}", evt.IncidentId);
         }
 
-        // 2. Persist diagnosis to PostgreSQL
-        var incident = await dbContext.Incidents.FirstOrDefaultAsync(i => i.Id == evt.IncidentId, ct);
-        if (incident != null && diagnosis != null)
+        // 2. Persist diagnosis to PostgreSQL (resilient fallback if DB offline)
+        try
         {
-            incident.AttachAiDiagnosis(diagnosis.RootCause, diagnosis.ImmediateFix, diagnosis.Prevention);
-            await dbContext.SaveChangesAsync(ct);
-            _logger.LogInformation("Attached AI diagnosis to incident {IncidentId} in database.", evt.IncidentId);
+            var incident = await dbContext.Incidents.FirstOrDefaultAsync(i => i.Id == evt.IncidentId, ct);
+            if (incident != null && diagnosis != null)
+            {
+                incident.AttachAiDiagnosis(diagnosis.RootCause, diagnosis.ImmediateFix, diagnosis.Prevention);
+                await dbContext.SaveChangesAsync(ct);
+                _logger.LogInformation("Attached AI diagnosis to incident {IncidentId} in database.", evt.IncidentId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not persist incident to DB (database may be offline). Proceeding to alert dispatch.");
         }
 
         // 3. Dispatch alert to Telegram
