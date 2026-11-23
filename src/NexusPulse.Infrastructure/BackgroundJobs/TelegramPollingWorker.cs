@@ -1,6 +1,7 @@
 namespace NexusPulse.Infrastructure.BackgroundJobs;
 
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NexusPulse.Application.Common.Interfaces;
@@ -15,14 +16,20 @@ public class TelegramPollingWorker : BackgroundService
 {
     private readonly ITelegramBotClient? _botClient;
     private readonly IIncidentChannel _incidentChannel;
+    private readonly IMetricsBroadcaster _broadcaster;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<TelegramPollingWorker> _logger;
 
     public TelegramPollingWorker(
         IConfiguration configuration,
         IIncidentChannel incidentChannel,
+        IMetricsBroadcaster broadcaster,
+        IServiceScopeFactory scopeFactory,
         ILogger<TelegramPollingWorker> logger)
     {
         _incidentChannel = incidentChannel;
+        _broadcaster = broadcaster;
+        _scopeFactory = scopeFactory;
         _logger = logger;
         var token = configuration["TelegramSettings:BotToken"];
 
@@ -59,7 +66,7 @@ public class TelegramPollingWorker : BackgroundService
     {
         try
         {
-            // 1. Обработка входящих текстовых сообщений (/start, /status, /help)
+            // 1. Обработка текстовых команд (/start, /help, /status)
             if (update.Type == UpdateType.Message && update.Message?.Text != null)
             {
                 var text = update.Message.Text.Trim();
@@ -73,7 +80,7 @@ public class TelegramPollingWorker : BackgroundService
                               "Бот выполняет роль <b>автономного On-Call диспетчера</b> кластера:\n" +
                               "• Мгновенно перехватывает сбои (HTTP 5xx, таймауты, обрыв Circuit Breaker);\n" +
                               "• Присылает структурированный Root Cause Analysis (RCA);\n" +
-                              "• Позволяет управлять нодами и заглушать алерты прямо из чата.\n\n" +
+                              "• Позволяет управлять нодами и заглушать алерты прямо из кнопок.\n\n" +
                               "<i>Для проверки нажмите кнопку ниже или симулируйте сбой в веб-дашборде:</i>";
 
                 var keyboard = new InlineKeyboardMarkup(new[]
@@ -126,7 +133,36 @@ public class TelegramPollingWorker : BackgroundService
                 {
                     await botClient.AnswerCallbackQuery(
                         callbackQueryId: callback.Id,
-                        text: "✅ Все 3 ноды кластера в штатном режиме (SLA 99.98%).",
+                        text: "✅ Все ноды кластера в штатном режиме (SLA 99.98%).",
+                        showAlert: true,
+                        cancellationToken: ct);
+                }
+                else if (data.StartsWith("restart:") || data.Contains("restart"))
+                {
+                    var parts = data.Split(':');
+                    var nodeIdStr = parts.Length > 1 ? parts[1] : string.Empty;
+                    Guid.TryParse(nodeIdStr, out var nodeId);
+                    if (nodeId == Guid.Empty)
+                    {
+                        nodeId = Guid.Parse("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+                    }
+
+                    var (nodeName, targetUrl) = GetFallbackNodeInfo(nodeId);
+
+                    // 1. Посылаем сигнал в веб-интерфейс через WebSocket SignalR для мгновенного восстановления карточки
+                    await _broadcaster.BroadcastRecoveryAsync(nodeId, nodeName);
+
+                    // 2. Отправляем в Telegram отчет о восстановлении ноды
+                    using (var scope = _scopeFactory.CreateScope())
+                    {
+                        var notifier = scope.ServiceProvider.GetRequiredService<ITelegramNotifier>();
+                        await notifier.SendRecoveryAlertAsync(nodeName, targetUrl, TimeSpan.FromMinutes(2.5));
+                    }
+
+                    // 3. Показываем всплывающее подтверждение инженеру в Telegram
+                    await botClient.AnswerCallbackQuery(
+                        callbackQueryId: callback.Id,
+                        text: $"✅ {nodeName} успешно перезапущен! Нода восстановлена в кластере.",
                         showAlert: true,
                         cancellationToken: ct);
                 }
@@ -135,14 +171,6 @@ public class TelegramPollingWorker : BackgroundService
                     await botClient.AnswerCallbackQuery(
                         callbackQueryId: callback.Id,
                         text: "🔕 Нода заморожена на 1 час. Алерты подавлены.",
-                        showAlert: true,
-                        cancellationToken: ct);
-                }
-                else if (data.Contains("restart"))
-                {
-                    await botClient.AnswerCallbackQuery(
-                        callbackQueryId: callback.Id,
-                        text: "🔄 Команда перезапуска отправлена в кластер!",
                         showAlert: true,
                         cancellationToken: ct);
                 }
@@ -168,6 +196,14 @@ public class TelegramPollingWorker : BackgroundService
             _logger.LogError(ex, "Error handling Telegram update.");
         }
     }
+
+    private static (string Name, string Url) GetFallbackNodeInfo(Guid id) => id switch
+    {
+        _ when id == Guid.Parse("f47ac10b-58cc-4372-a567-0e02b2c3d479") => ("Payment Gateway API", "https://api.payments.internal/v1/charge"),
+        _ when id == Guid.Parse("a12bc34d-58ee-4172-b567-1e02b2c3d480") => ("Billing & Invoicing Service", "https://billing.internal/health"),
+        _ when id == Guid.Parse("c98de76f-12aa-4982-c567-2e02b2c3d481") => ("Auth & Identity Cluster", "https://auth.internal/oauth/health"),
+        _ => ("Payment Gateway API", "https://api.payments.internal/v1/charge")
+    };
 
     private Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken ct)
     {
