@@ -43,7 +43,7 @@ public static class ResiliencePipelineConfig
             // 3. Timeout per request
             builder.AddTimeout(new TimeoutStrategyOptions
             {
-                Timeout = TimeSpan.FromSeconds(5)
+                Timeout = TimeSpan.FromSeconds(8)
             });
         });
 
