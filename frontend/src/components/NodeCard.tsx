@@ -63,15 +63,21 @@ export const NodeCard: React.FC<NodeCardProps> = ({
               <h3 className="font-semibold text-zinc-100 text-sm truncate font-mono">
                 {node.name}
               </h3>
-              <a
-                href={node.targetUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-200 transition font-mono truncate max-w-full"
-              >
-                <span className="truncate">{node.targetUrl}</span>
-                <ExternalLink className="w-2.5 h-2.5 flex-shrink-0" />
-              </a>
+              {node.targetUrl.startsWith('http://') || node.targetUrl.startsWith('https://') ? (
+                <a
+                  href={node.targetUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-200 transition font-mono truncate max-w-full"
+                >
+                  <span className="truncate">{node.targetUrl}</span>
+                  <ExternalLink className="w-2.5 h-2.5 flex-shrink-0" />
+                </a>
+              ) : (
+                <span className="inline-flex items-center text-[11px] text-zinc-400 font-mono truncate max-w-full">
+                  {node.targetUrl}
+                </span>
+              )}
             </div>
           </div>
 

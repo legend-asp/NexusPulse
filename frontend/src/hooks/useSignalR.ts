@@ -5,11 +5,11 @@ import type { MetricUpdatePayload, IncidentAlertPayload, NodeRecoveredPayload } 
 export function useSignalR(
   onMetricUpdated?: (data: MetricUpdatePayload) => void,
   onIncidentAlert?: (data: IncidentAlertPayload) => void,
-  onNodeRecovered?: (data: NodeRecoveredPayload) => void
+  onNodeRecovered?: (data: NodeRecoveredPayload) => void,
+  enabled: boolean = true
 ) {
   const [isConnected, setIsConnected] = useState<boolean>(false);
 
-  // Храним актуальные ссылки на коллбеки, чтобы не пересоздавать WebSocket-соединение
   const onMetricUpdatedRef = useRef(onMetricUpdated);
   const onIncidentAlertRef = useRef(onIncidentAlert);
   const onNodeRecoveredRef = useRef(onNodeRecovered);
@@ -21,9 +21,15 @@ export function useSignalR(
   }, [onMetricUpdated, onIncidentAlert, onNodeRecovered]);
 
   useEffect(() => {
+    if (!enabled) {
+      setIsConnected(false);
+      return;
+    }
+
     const connection = new signalR.HubConnectionBuilder()
-      .withUrl('http://localhost:5199/hubs/metrics', {
+      .withUrl('/hubs/metrics', {
         transport: signalR.HttpTransportType.WebSockets | signalR.HttpTransportType.LongPolling,
+        withCredentials: true,
       })
       .withAutomaticReconnect()
       .configureLogging(signalR.LogLevel.Information)
@@ -56,7 +62,7 @@ export function useSignalR(
     return () => {
       connection.stop();
     };
-  }, []);
+  }, [enabled]);
 
   return { isConnected };
 }

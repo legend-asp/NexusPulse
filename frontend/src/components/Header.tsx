@@ -1,12 +1,19 @@
 import React from 'react';
-import { Activity } from 'lucide-react';
+import { Activity, LogOut } from 'lucide-react';
 
 interface HeaderProps {
   isConnected: boolean;
   activeIncidentsCount: number;
+  authEnabled?: boolean;
+  onLogout?: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ isConnected, activeIncidentsCount }) => {
+export const Header: React.FC<HeaderProps> = ({
+  isConnected,
+  activeIncidentsCount,
+  authEnabled = false,
+  onLogout,
+}) => {
   return (
     <header className="border-b border-zinc-800/80 bg-zinc-950/80 backdrop-blur-md sticky top-0 z-40 transition-colors">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
@@ -70,6 +77,18 @@ export const Header: React.FC<HeaderProps> = ({ isConnected, activeIncidentsCoun
             <span className="hidden md:inline">{isConnected ? 'SignalR: Live' : 'SignalR: Standby'}</span>
             <span className="md:hidden">{isConnected ? 'Live' : 'Off'}</span>
           </div>
+
+          {authEnabled && onLogout && (
+            <button
+              type="button"
+              onClick={onLogout}
+              title="Lock & Sign out"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 font-mono text-zinc-400 hover:text-zinc-200 text-xs transition"
+            >
+              <LogOut className="w-3 h-3" />
+              <span className="hidden sm:inline">Lock</span>
+            </button>
+          )}
         </div>
       </div>
     </header>

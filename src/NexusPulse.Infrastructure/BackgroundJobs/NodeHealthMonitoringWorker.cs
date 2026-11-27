@@ -1,7 +1,9 @@
 ﻿namespace NexusPulse.Infrastructure.BackgroundJobs;
 
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Http;
+using System.Net.Sockets;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -21,37 +23,29 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ResiliencePipelineProvider<string> _pipelineProvider;
     private readonly IIncidentChannel _incidentChannel;
+    private readonly IMonitoredNodeRegistry _nodeRegistry;
     private readonly ILogger<NodeHealthMonitoringWorker> _logger;
-
-    public static readonly List<MonitoredNode> FallbackNodes =
-    [
-        new MonitoredNode(Guid.Parse("f47ac10b-58cc-4372-a567-0e02b2c3d479"), "VPN Web Landing", "https://nexusvpn.net", 5, 5),
-        new MonitoredNode(Guid.Parse("a12bc34d-58ee-4172-b567-1e02b2c3d480"), "VPN Node 01 (NL - Amsterdam)", "https://nl.nexusvpn.net/health", 5, 5),
-        new MonitoredNode(Guid.Parse("c98de76f-12aa-4982-c567-2e02b2c3d481"), "VPN Node 02 (DE - Frankfurt)", "https://de.nexusvpn.net/health", 5, 5),
-        new MonitoredNode(Guid.Parse("d34ef87a-23bb-4093-d678-3e02b2c3d482"), "VPN Node 03 (FI - Helsinki)", "https://fi.nexusvpn.net/health", 5, 5),
-        new MonitoredNode(Guid.Parse("e56fa98b-34cc-4104-e789-4e02b2c3d483"), "VPN Node 04 (SE - Stockholm)", "https://se.nexusvpn.net/health", 5, 5),
-        new MonitoredNode(Guid.Parse("f78ab09c-45dd-4215-f890-5e02b2c3d484"), "VPN Node 05 (PL - Warsaw)", "https://pl.nexusvpn.net/health", 5, 5),
-        new MonitoredNode(Guid.Parse("b89bc10d-56ee-4326-a901-6e02b2c3d485"), "Merchant Payment Gateway", "https://api.cryptomus.com/v1/health", 5, 5),
-        new MonitoredNode(Guid.Parse("c90cd21e-67ff-4437-b012-7e02b2c3d486"), "Telegram Bot Endpoint", "https://api.telegram.org", 5, 5)
-    ];
+    private readonly ConcurrentDictionary<Guid, DateTime> _lastProbeTimes = new();
 
     public NodeHealthMonitoringWorker(
         IServiceScopeFactory scopeFactory,
         IHttpClientFactory httpClientFactory,
         ResiliencePipelineProvider<string> pipelineProvider,
         IIncidentChannel incidentChannel,
+        IMonitoredNodeRegistry nodeRegistry,
         ILogger<NodeHealthMonitoringWorker> logger)
     {
         _scopeFactory = scopeFactory;
         _httpClientFactory = httpClientFactory;
         _pipelineProvider = pipelineProvider;
         _incidentChannel = incidentChannel;
+        _nodeRegistry = nodeRegistry;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("NodeHealthMonitoringWorker started. Monitoring interval: 5 seconds.");
+        _logger.LogInformation("NodeHealthMonitoringWorker started. Tick interval: 5 seconds.");
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
 
         try
@@ -60,29 +54,23 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
             {
                 try
                 {
-                    List<MonitoredNode> currentNodes;
-                    try
-                    {
-                        using var scope = _scopeFactory.CreateScope();
-                        var db = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
-                        currentNodes = await db.Nodes
-                            .Where(n => n.IsActive)
-                            .ToListAsync(stoppingToken);
-
-                        if (currentNodes.Count == 0)
-                        {
-                            currentNodes = FallbackNodes.Where(n => n.IsActive).ToList();
-                        }
-                    }
-                    catch
-                    {
-                        currentNodes = FallbackNodes.Where(n => n.IsActive).ToList();
-                    }
-
+                    var currentNodes = await ResolveActiveNodesAsync(stoppingToken);
                     if (currentNodes.Count == 0)
                         continue;
 
-                    var httpClient = _httpClientFactory.CreateClient("NodeMonitoringClient");
+                    var now = DateTime.UtcNow;
+                    var dueNodes = currentNodes.Where(n =>
+                    {
+                        if (!_lastProbeTimes.TryGetValue(n.Id, out var lastRun))
+                            return true;
+                        return (now - lastRun).TotalSeconds >= Math.Max(4, n.CheckIntervalSeconds - 1);
+                    }).ToList();
+
+                    if (dueNodes.Count == 0)
+                        continue;
+
+                    var standardClient = _httpClientFactory.CreateClient("NodeMonitoringClient");
+                    var insecureClient = _httpClientFactory.CreateClient("InsecureNodeMonitoringClient");
                     var pipeline = _pipelineProvider.GetPipeline<HttpResponseMessage>(ResiliencePipelineConfig.PipelineKey);
 
                     var parallelOptions = new ParallelOptions
@@ -91,8 +79,10 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
                         CancellationToken = stoppingToken
                     };
 
-                    await Parallel.ForEachAsync(currentNodes, parallelOptions, async (node, ct) =>
+                    await Parallel.ForEachAsync(dueNodes, parallelOptions, async (node, ct) =>
                     {
+                        _lastProbeTimes[node.Id] = DateTime.UtcNow;
+
                         using var nodeScope = _scopeFactory.CreateScope();
                         IAppDbContext? nodeDbContext = null;
                         try { nodeDbContext = nodeScope.ServiceProvider.GetRequiredService<IAppDbContext>(); } catch { }
@@ -100,7 +90,7 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
                         var broadcaster = nodeScope.ServiceProvider.GetService<IMetricsBroadcaster>();
                         var telegramNotifier = nodeScope.ServiceProvider.GetService<ITelegramNotifier>();
 
-                        await CheckSingleNodeAsync(node, httpClient, pipeline, nodeDbContext, nodeCache, broadcaster, telegramNotifier, ct);
+                        await CheckSingleNodeAsync(node, standardClient, insecureClient, pipeline, nodeDbContext, nodeCache, broadcaster, telegramNotifier, ct);
                         if (nodeDbContext != null)
                         {
                             try { await nodeDbContext.SaveChangesAsync(ct); } catch { }
@@ -119,9 +109,30 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
         }
     }
 
+    private async Task<List<MonitoredNode>> ResolveActiveNodesAsync(CancellationToken ct)
+    {
+        if (_nodeRegistry.HasConfiguredNodes)
+        {
+            return _nodeRegistry.GetNodes().Where(n => n.IsActive).ToList();
+        }
+
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
+            var dbNodes = await db.Nodes.Where(n => n.IsActive).ToListAsync(ct);
+            if (dbNodes.Count > 0)
+                return dbNodes;
+        }
+        catch { }
+
+        return _nodeRegistry.GetNodes().Where(n => n.IsActive).ToList();
+    }
+
     private async Task CheckSingleNodeAsync(
         MonitoredNode node,
-        HttpClient httpClient,
+        HttpClient standardClient,
+        HttpClient insecureClient,
         ResiliencePipeline<HttpResponseMessage> pipeline,
         IAppDbContext? dbContext,
         ICacheService cacheService,
@@ -129,36 +140,75 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
         ITelegramNotifier? telegramNotifier,
         CancellationToken ct)
     {
-        // Если для ноды зафиксирован активный инцидент или симуляция — не перезаписываем статусом Healthy
-        if (await cacheService.HasActiveIncidentLockAsync(node.Id))
+        // Do not override manual UI simulation tests during automated background polls
+        if (await cacheService.HasSimulationLockAsync(node.Id))
         {
             return;
         }
+
+        var nodeOptions = _nodeRegistry.GetNodeOptions(node.Id);
+        var displayUrl = _nodeRegistry.GetDisplayUrl(node.Id, node.TargetUrl);
 
         var sw = Stopwatch.StartNew();
         var context = ResilienceContextPool.Shared.Get(node.TargetUrl);
 
         try
         {
-            HttpResponseMessage? response = null;
-            int latency = 0;
+            int latency;
+            int statusCode = 200;
 
-            // Если URL моковый/внутренний плейсхолдер — симулируем живой пинг без заспамливания логов DNS
-            if (node.TargetUrl.Contains("nexusvpn.net") || node.TargetUrl.Contains(".internal"))
+            if (node.TargetUrl.Contains("nexusvpn.net", StringComparison.OrdinalIgnoreCase) ||
+                node.TargetUrl.Contains(".internal", StringComparison.OrdinalIgnoreCase))
             {
+                if (await cacheService.HasActiveIncidentLockAsync(node.Id))
+                    return;
+
                 await Task.Delay(Random.Shared.Next(18, 38), ct);
                 sw.Stop();
                 latency = (int)sw.ElapsedMilliseconds;
             }
+            else if (node.TargetUrl.StartsWith("tcp://", StringComparison.OrdinalIgnoreCase))
+            {
+                latency = await ProbeTcpPortAsync(node.TargetUrl, node.TimeoutSeconds, ct);
+                sw.Stop();
+            }
             else
             {
-                response = await pipeline.ExecuteAsync(async ctx =>
-                    await httpClient.GetAsync(node.TargetUrl, ctx.CancellationToken), context);
+                var client = nodeOptions?.AllowInsecureTls == true ? insecureClient : standardClient;
+                var response = await pipeline.ExecuteAsync(async ctx =>
+                {
+                    using var request = BuildHttpRequest(node.TargetUrl, nodeOptions);
+                    return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ctx.CancellationToken);
+                }, context);
+
                 sw.Stop();
                 latency = (int)sw.ElapsedMilliseconds;
+                statusCode = (int)response.StatusCode;
+
+                bool isExpectedStatus = nodeOptions?.ExpectedStatusCodes is { Length: > 0 }
+                    ? nodeOptions.ExpectedStatusCodes.Contains(statusCode)
+                    : statusCode is >= 200 and < 400;
+
+                if (!isExpectedStatus)
+                {
+                    var errorMsg = $"HTTP {statusCode} {response.ReasonPhrase}: Unexpected response from endpoint";
+                    await HandleFailureAsync(
+                        node,
+                        displayUrl,
+                        latency,
+                        errorMsg,
+                        $"HttpStatus{statusCode}",
+                        statusCode,
+                        dbContext,
+                        cacheService,
+                        broadcaster,
+                        isCritical: statusCode >= 500 || statusCode == 404,
+                        ct);
+                    return;
+                }
             }
 
-            int statusCode = response != null ? (int)response.StatusCode : 200;
+            _nodeRegistry.RecordSuccess(node.Id, latency);
             node.RecordSuccess(latency);
             await cacheService.SetNodeMetricSnapshotAsync(node.Id, latency, statusCode, isSuccess: true);
 
@@ -166,16 +216,78 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
             {
                 await broadcaster.BroadcastMetricUpdateAsync(node.Id, latency, statusCode, isSuccess: true);
             }
+
+            // Detect real recovery when an outage ends
+            if (await cacheService.HasActiveIncidentLockAsync(node.Id))
+            {
+                await cacheService.ReleaseIncidentLockAsync(node.Id);
+                var downtime = TimeSpan.Zero;
+
+                if (dbContext != null)
+                {
+                    try
+                    {
+                        var activeIncident = await dbContext.Incidents
+                            .Where(i => i.NodeId == node.Id && i.Status == IncidentStatus.Active)
+                            .OrderByDescending(i => i.StartedAt)
+                            .FirstOrDefaultAsync(ct);
+
+                        if (activeIncident != null)
+                        {
+                            activeIncident.Resolve();
+                            downtime = activeIncident.ResolvedAt.HasValue
+                                ? activeIncident.ResolvedAt.Value - activeIncident.StartedAt
+                                : TimeSpan.Zero;
+                        }
+                    }
+                    catch { }
+                }
+
+                if (telegramNotifier != null)
+                {
+                    await telegramNotifier.SendRecoveryAlertAsync(node.Name, displayUrl, downtime);
+                }
+
+                if (broadcaster != null)
+                {
+                    await broadcaster.BroadcastRecoveryAsync(node.Id, node.Name);
+                }
+
+                _logger.LogInformation("Node {NodeName} RECOVERED. Incident resolved.", node.Name);
+            }
         }
         catch (BrokenCircuitException)
         {
             sw.Stop();
-            await HandleFailureAsync(node, (int)sw.ElapsedMilliseconds, "Circuit Breaker Open: Host is unreachable", "CircuitBreakerOpen", dbContext, cacheService, broadcaster, isCritical: true, ct);
+            await HandleFailureAsync(
+                node,
+                displayUrl,
+                (int)sw.ElapsedMilliseconds,
+                "Circuit Breaker Open: Host is unreachable after repeated failures",
+                "CircuitBreakerOpen",
+                null,
+                dbContext,
+                cacheService,
+                broadcaster,
+                isCritical: true,
+                ct);
         }
         catch (Exception ex)
         {
             sw.Stop();
-            await HandleFailureAsync(node, (int)sw.ElapsedMilliseconds, ex.Message, ex.GetType().Name, dbContext, cacheService, broadcaster, isCritical: false, ct);
+            var errorMessage = ex.InnerException != null ? $"{ex.Message} ({ex.InnerException.Message})" : ex.Message;
+            await HandleFailureAsync(
+                node,
+                displayUrl,
+                (int)sw.ElapsedMilliseconds,
+                errorMessage,
+                ex.GetType().Name,
+                null,
+                dbContext,
+                cacheService,
+                broadcaster,
+                isCritical: true,
+                ct);
         }
         finally
         {
@@ -183,56 +295,96 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
         }
     }
 
+    private static async Task<int> ProbeTcpPortAsync(string targetUrl, int timeoutSeconds, CancellationToken ct)
+    {
+        var uri = new Uri(targetUrl);
+        if (uri.Port <= 0)
+            throw new InvalidOperationException($"TCP target '{targetUrl}' must specify an explicit port.");
+
+        var sw = Stopwatch.StartNew();
+        using var tcpClient = new TcpClient();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(timeoutSeconds, 1, 30)));
+
+        await tcpClient.ConnectAsync(uri.Host, uri.Port, timeoutCts.Token);
+        sw.Stop();
+        return (int)sw.ElapsedMilliseconds;
+    }
+
+    private static HttpRequestMessage BuildHttpRequest(string targetUrl, MonitoringNodeOptions? options)
+    {
+        var method = !string.IsNullOrWhiteSpace(options?.HttpMethod)
+            ? new HttpMethod(options.HttpMethod.Trim().ToUpperInvariant())
+            : HttpMethod.Get;
+
+        var request = new HttpRequestMessage(method, targetUrl);
+        request.Headers.TryAddWithoutValidation("User-Agent", "NexusPulse-HealthMonitor/2.0");
+
+        if (options?.Headers != null)
+        {
+            foreach (var (key, value) in options.Headers)
+            {
+                if (!string.IsNullOrWhiteSpace(key) && value != null)
+                {
+                    request.Headers.TryAddWithoutValidation(key, value);
+                }
+            }
+        }
+
+        return request;
+    }
+
     private async Task HandleFailureAsync(
         MonitoredNode node,
+        string displayUrl,
         int latency,
         string error,
         string failureType,
+        int? statusCode,
         IAppDbContext? dbContext,
         ICacheService cacheService,
         IMetricsBroadcaster? broadcaster,
         bool isCritical,
         CancellationToken ct)
     {
+        _nodeRegistry.RecordFailure(node.Id, error, isCritical);
         node.RecordFailure(error, isCritical);
-        await cacheService.SetNodeMetricSnapshotAsync(node.Id, latency, 0, isSuccess: false);
+        await cacheService.SetNodeMetricSnapshotAsync(node.Id, latency, statusCode ?? 0, isSuccess: false);
 
         if (broadcaster != null)
         {
-            await broadcaster.BroadcastMetricUpdateAsync(node.Id, latency, 0, isSuccess: false);
+            await broadcaster.BroadcastMetricUpdateAsync(node.Id, latency, statusCode ?? 0, isSuccess: false);
         }
 
         var newIncidentId = Guid.NewGuid();
-
-        // Атомарный лок в Redis/памяти: вернет true ТОЛЬКО при первом переходе в состояние сбоя
         bool isNewIncident = await cacheService.TryAcquireIncidentLockAsync(node.Id, newIncidentId, TimeSpan.FromHours(24));
 
         if (isNewIncident)
         {
-            try
+            if (dbContext != null)
             {
-                if (dbContext != null)
+                try
                 {
                     var incident = new Incident(node.Id, isCritical ? IncidentSeverity.Critical : IncidentSeverity.Warning, error, failureType);
+                    newIncidentId = incident.Id;
                     dbContext.Incidents.Add(incident);
                     await dbContext.SaveChangesAsync(ct);
                 }
+                catch { }
             }
-            catch { }
 
-            // Отправляем событие в неблокирующий System.Threading.Channels
             await _incidentChannel.PublishAsync(new IncidentDetectedEvent(
                 newIncidentId,
                 node.Id,
                 node.Name,
-                node.TargetUrl,
+                displayUrl,
                 error,
                 failureType,
-                null,
+                statusCode,
                 DateTime.UtcNow
             ), ct);
 
-            _logger.LogWarning("NEW INCIDENT [{Severity}] on {NodeName}: {Error}. Event published to Channel.",
+            _logger.LogWarning("NEW INCIDENT [{Severity}] on {NodeName}: {Error}. Alert dispatched.",
                 isCritical ? "Critical" : "Warning", node.Name, error);
         }
     }

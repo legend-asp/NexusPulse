@@ -11,6 +11,7 @@ public class RedisCacheService : ICacheService
     private readonly IDatabase _database;
     private readonly ILogger<RedisCacheService> _logger;
     private static readonly ConcurrentDictionary<Guid, Guid> _inMemoryIncidentLocks = new();
+    private static readonly ConcurrentDictionary<Guid, DateTime> _inMemorySimulationLocks = new();
     private static readonly ConcurrentDictionary<Guid, string> _inMemoryMetrics = new();
 
     public RedisCacheService(IConnectionMultiplexer connectionMultiplexer, ILogger<RedisCacheService> logger)
@@ -24,38 +25,45 @@ public class RedisCacheService : ICacheService
         string key = $"incident:active:{nodeId}";
         string value = incidentId.ToString();
 
-        try
+        if (_database.Multiplexer.IsConnected)
         {
-            bool isSet = await _database.StringSetAsync(
-                key: key,
-                value: value,
-                expiry: ttl,
-                when: When.NotExists
-            );
-
-            if (isSet)
+            try
             {
-                _inMemoryIncidentLocks[nodeId] = incidentId;
-                _logger.LogInformation("Active incident lock acquired in Redis for node {NodeId} with incident {IncidentId}", nodeId, incidentId);
+                bool isSet = await _database.StringSetAsync(
+                    key: key,
+                    value: value,
+                    expiry: ttl,
+                    when: When.NotExists
+                );
+
+                if (isSet)
+                {
+                    _inMemoryIncidentLocks[nodeId] = incidentId;
+                    _logger.LogInformation("Active incident lock acquired in Redis for node {NodeId} with incident {IncidentId}", nodeId, incidentId);
+                }
+                return isSet;
             }
-            return isSet;
+            catch (Exception ex)
+            {
+                _logger.LogDebug("Redis offline ({Message}), using in-memory incident lock for node {NodeId}", ex.Message, nodeId);
+            }
         }
-        catch (Exception ex)
-        {
-            _logger.LogDebug("Redis offline ({Message}), using in-memory incident lock for node {NodeId}", ex.Message, nodeId);
-            return _inMemoryIncidentLocks.TryAdd(nodeId, incidentId);
-        }
+
+        return _inMemoryIncidentLocks.TryAdd(nodeId, incidentId);
     }
 
     public async Task ReleaseIncidentLockAsync(Guid nodeId)
     {
         string key = $"incident:active:{nodeId}";
-        try
+        if (_database.Multiplexer.IsConnected)
         {
-            await _database.KeyDeleteAsync(key);
-            _logger.LogInformation("Released incident lock in Redis for node {NodeId}", nodeId);
+            try
+            {
+                await _database.KeyDeleteAsync(key);
+                _logger.LogInformation("Released incident lock in Redis for node {NodeId}", nodeId);
+            }
+            catch { }
         }
-        catch { }
 
         _inMemoryIncidentLocks.TryRemove(nodeId, out _);
     }
@@ -63,13 +71,64 @@ public class RedisCacheService : ICacheService
     public async Task<bool> HasActiveIncidentLockAsync(Guid nodeId)
     {
         string key = $"incident:active:{nodeId}";
-        try
+        if (_database.Multiplexer.IsConnected)
         {
-            return await _database.KeyExistsAsync(key);
+            try
+            {
+                return await _database.KeyExistsAsync(key);
+            }
+            catch { }
         }
-        catch
+
+        return _inMemoryIncidentLocks.ContainsKey(nodeId);
+    }
+
+    public async Task SetSimulationLockAsync(Guid nodeId, TimeSpan ttl)
+    {
+        string key = $"incident:sim:{nodeId}";
+        _inMemorySimulationLocks[nodeId] = DateTime.UtcNow.Add(ttl);
+        if (_database.Multiplexer.IsConnected)
         {
-            return _inMemoryIncidentLocks.ContainsKey(nodeId);
+            try
+            {
+                await _database.StringSetAsync(key, "1", ttl);
+            }
+            catch { }
+        }
+    }
+
+    public async Task<bool> HasSimulationLockAsync(Guid nodeId)
+    {
+        string key = $"incident:sim:{nodeId}";
+        if (_database.Multiplexer.IsConnected)
+        {
+            try
+            {
+                return await _database.KeyExistsAsync(key);
+            }
+            catch { }
+        }
+
+        if (_inMemorySimulationLocks.TryGetValue(nodeId, out var expiresAt))
+        {
+            if (expiresAt > DateTime.UtcNow)
+                return true;
+            _inMemorySimulationLocks.TryRemove(nodeId, out _);
+        }
+        return false;
+    }
+
+    public async Task ReleaseSimulationLockAsync(Guid nodeId)
+    {
+        string key = $"incident:sim:{nodeId}";
+        _inMemorySimulationLocks.TryRemove(nodeId, out _);
+        if (_database.Multiplexer.IsConnected)
+        {
+            try
+            {
+                await _database.KeyDeleteAsync(key);
+            }
+            catch { }
         }
     }
 
@@ -85,13 +144,14 @@ public class RedisCacheService : ICacheService
         };
         string json = JsonSerializer.Serialize(snapshot);
 
-        try
+        _inMemoryMetrics[nodeId] = json;
+        if (_database.Multiplexer.IsConnected)
         {
-            await _database.StringSetAsync(key, json, TimeSpan.FromSeconds(60));
-        }
-        catch
-        {
-            _inMemoryMetrics[nodeId] = json;
+            try
+            {
+                await _database.StringSetAsync(key, json, TimeSpan.FromSeconds(60));
+            }
+            catch { }
         }
     }
 }

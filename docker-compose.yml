@@ -34,7 +34,7 @@
       ConnectionStrings__DefaultConnection: "Host=nexus-postgres;Port=5432;Database=nexus_db;Username=postgres;Password=postgrespassword"
       ConnectionStrings__Redis: "nexus-redis:6379"
       GeminiSettings__ApiKey: "YOUR_GEMINI_API_KEY"
-      GeminiSettings__Model: "gemini-3.1-flash-lite"
+      GeminiSettings__Model: "gemini-flash-lite-latest"
       TelegramSettings__BotToken: "YOUR_TELEGRAM_BOT_TOKEN"
       TelegramSettings__ChatId: "YOUR_TELEGRAM_CHAT_ID"
     ports:

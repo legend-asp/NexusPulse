@@ -484,4 +484,9 @@ $RECYCLE.BIN/
 *.swp
 
 appsettings.Development.json
+appsettings.Production.json
+appsettings.*.local.json
+docker-compose.prod.yml
+.env
+.env.*
 *.user

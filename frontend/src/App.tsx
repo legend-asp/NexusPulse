@@ -5,6 +5,7 @@ import { Header } from './components/Header';
 import { NodeCard } from './components/NodeCard';
 import { IncidentBanner } from './components/IncidentBanner';
 import { IncidentModal } from './components/IncidentModal';
+import { LoginView } from './components/LoginView';
 import { Activity, Layers, Server, Cpu } from 'lucide-react';
 
 const INITIAL_NODES: MonitoredNode[] = [
@@ -181,19 +182,49 @@ export function App() {
   });
 
   const [modalNode, setModalNode] = useState<MonitoredNode | null>(null);
+  const [auth, setAuth] = useState<{ loading: boolean; enabled: boolean; authenticated: boolean }>({
+    loading: true,
+    enabled: false,
+    authenticated: false,
+  });
 
-  // Сохранение состояния в localStorage для сохранения при обновлении F5
+  const checkAuthStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auth/status', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        const isAuthed = Boolean(data.authenticated);
+        const isEnabled = Boolean(data.enabled);
+        if (isEnabled && !isAuthed) {
+          localStorage.removeItem('nexus_pulse_vpn_nodes_v2');
+          localStorage.removeItem('nexus_pulse_vpn_incidents_v2');
+        }
+        setAuth({ loading: false, enabled: isEnabled, authenticated: isAuthed });
+        return;
+      }
+    } catch { }
+    // Local static fallback if API is offline
+    setAuth({ loading: false, enabled: false, authenticated: true });
+  }, []);
+
   useEffect(() => {
+    checkAuthStatus();
+  }, [checkAuthStatus]);
+
+  // Сохранение состояния в localStorage для сохранения при обновлении F5 (только после авторизации)
+  useEffect(() => {
+    if (!auth.authenticated) return;
     try {
       localStorage.setItem('nexus_pulse_vpn_nodes_v2', JSON.stringify(nodes));
     } catch { }
-  }, [nodes]);
+  }, [nodes, auth.authenticated]);
 
   useEffect(() => {
+    if (!auth.authenticated) return;
     try {
       localStorage.setItem('nexus_pulse_vpn_incidents_v2', JSON.stringify(incidents));
     } catch { }
-  }, [incidents]);
+  }, [incidents, auth.authenticated]);
 
   // Реф для предотвращения случайного сброса упавшей ноды фоновым SignalR-пульсом
   const incidentsRef = useRef(incidents);
@@ -201,10 +232,18 @@ export function App() {
     incidentsRef.current = incidents;
   }, [incidents]);
 
-  // 1. Загрузка нод из бэкенда при монтировании
+  // 1. Загрузка нод из бэкенда после проверки авторизации
   useEffect(() => {
-    fetch('http://localhost:5199/api/nodes')
-      .then((res) => (res.ok ? res.json() : null))
+    if (!auth.authenticated) return;
+
+    fetch('/api/nodes', { credentials: 'include' })
+      .then((res) => {
+        if (res.status === 401) {
+          setAuth({ loading: false, enabled: true, authenticated: false });
+          return null;
+        }
+        return res.ok ? res.json() : null;
+      })
       .then((data: MonitoredNode[] | null) => {
         if (data && data.length > 0) {
           setNodes(() =>
@@ -221,7 +260,7 @@ export function App() {
       .catch(() => {
         // Fallback: мок-ноды
       });
-  }, []);
+  }, [auth.authenticated]);
 
   // 2. Обработка живой телеметрии из SignalR
   const handleMetricUpdated = useCallback((data: MetricUpdatePayload) => {
@@ -316,8 +355,22 @@ export function App() {
     setModalNode((curr) => (curr?.id.toLowerCase() === nodeId ? null : curr));
   }, []);
 
-  // 5. SignalR хук
-  const { isConnected } = useSignalR(handleMetricUpdated, handleIncidentAlert, handleNodeRecovered);
+  // 5. SignalR хук (активируется только после авторизации)
+  const { isConnected } = useSignalR(
+    handleMetricUpdated,
+    handleIncidentAlert,
+    handleNodeRecovered,
+    auth.authenticated
+  );
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    } catch { }
+    localStorage.removeItem('nexus_pulse_vpn_nodes_v2');
+    localStorage.removeItem('nexus_pulse_vpn_incidents_v2');
+    setAuth({ loading: false, enabled: true, authenticated: false });
+  };
 
   // 6. МГНОВЕННАЯ симуляция сбоя с оптимистичным обновлением
   const handleSimulateFailure = async (nodeId: string) => {
@@ -357,9 +410,10 @@ export function App() {
 
     // 2. Отправляем запрос в бэкенд для Telegram-алерта и Gemini
     try {
-      await fetch(`http://localhost:5199/api/nodes/${targetNode.id}/simulate-failure`, {
+      await fetch(`/api/nodes/${targetNode.id}/simulate-failure`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           errorMessage: 'HTTP 504 Gateway Timeout: Upstream dependency connection aborted after 30000ms',
           failureType: 'HttpTimeout',
@@ -400,7 +454,7 @@ export function App() {
 
     // Оповещаем бэкенд для Telegram-уведомления
     try {
-      await fetch(`http://localhost:5199/api/nodes/${nodeId}/restore`, { method: 'POST' });
+      await fetch(`/api/nodes/${nodeId}/restore`, { method: 'POST', credentials: 'include' });
     } catch { }
   };
 
@@ -421,13 +475,13 @@ export function App() {
 
     for (const node of downNodes) {
       try {
-        await fetch(`http://localhost:5199/api/nodes/${node.id}/restore`, { method: 'POST' });
+        await fetch(`/api/nodes/${node.id}/restore`, { method: 'POST', credentials: 'include' });
       } catch { }
     }
   };
 
   const healthyNodesCount = nodes.filter((n) => n.healthStatus === 'Healthy').length;
-  const healthPercent = Math.round((healthyNodesCount / nodes.length) * 100);
+  const healthPercent = nodes.length > 0 ? Math.round((healthyNodesCount / nodes.length) * 100) : 100;
   const activeDownCount = nodes.filter((n) => n.healthStatus === 'Down').length;
 
   // Самый свежий инцидент для верхнего баннера
@@ -436,13 +490,30 @@ export function App() {
     return list.length > 0 ? list[list.length - 1] : null;
   }, [incidents]);
 
+  if (auth.loading) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-zinc-400 flex items-center justify-center font-mono text-xs">
+        Initializing telemetry session...
+      </div>
+    );
+  }
+
+  if (auth.enabled && !auth.authenticated) {
+    return <LoginView onSuccess={() => setAuth({ loading: false, enabled: true, authenticated: true })} />;
+  }
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans selection:bg-zinc-800 selection:text-zinc-100 relative">
       {/* Деликатное фоновое свечение в стиле Datadog/Linear */}
       <div className="fixed inset-0 pointer-events-none bg-[radial-gradient(ellipse_80%_50%_at_50%_-10%,rgba(16,185,129,0.05),rgba(0,0,0,0))] z-0" />
 
       {/* Шапка дашборда */}
-      <Header isConnected={isConnected} activeIncidentsCount={activeDownCount} />
+      <Header
+        isConnected={isConnected}
+        activeIncidentsCount={activeDownCount}
+        authEnabled={auth.enabled}
+        onLogout={handleLogout}
+      />
 
       {/* Основной контент */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 relative z-10">
