@@ -215,6 +215,8 @@ public class NodesController : ControllerBase
 
         await _cacheService.ReleaseSimulationLockAsync(id);
         await _cacheService.ReleaseIncidentLockAsync(id);
+        _nodeRegistry.ResetFailureCount(id);
+        _nodeRegistry.GetAndClearDowntime(id);
         _nodeRegistry.RecordSuccess(id, 24);
 
         try

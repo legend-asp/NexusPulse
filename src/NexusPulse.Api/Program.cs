@@ -1,4 +1,6 @@
-﻿using System.Net.Security;
+﻿using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using NexusPulse.Api.Hubs;
@@ -71,21 +73,53 @@ builder.Services.AddSingleton<TotpService>();
 // 7. Keyed Polly v8 Resilience Pipeline
 builder.Services.AddNodeMonitoringResilience();
 
-// 8. HttpClients (Standard + Self-Signed TLS client for raw-IP admin panels)
+// 8. HttpClients (Standard + Self-Signed TLS client for raw-IP admin panels, IPv4 preferred)
+static async ValueTask<Stream> ConnectPreferIpv4Async(SocketsHttpConnectionContext context, CancellationToken ct)
+{
+    var host = context.DnsEndPoint.Host;
+    var port = context.DnsEndPoint.Port;
+
+    IPAddress[] addresses;
+    if (IPAddress.TryParse(host, out var parsed))
+    {
+        addresses = [parsed];
+    }
+    else
+    {
+        var all = await Dns.GetHostAddressesAsync(host, ct);
+        var ipv4 = all.Where(a => a.AddressFamily == AddressFamily.InterNetwork).ToArray();
+        addresses = ipv4.Length > 0 ? ipv4 : all;
+    }
+
+    var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+    try
+    {
+        await socket.ConnectAsync(addresses, port, ct);
+        return new NetworkStream(socket, ownsSocket: true);
+    }
+    catch
+    {
+        socket.Dispose();
+        throw;
+    }
+}
+
 builder.Services.AddHttpClient("NodeMonitoringClient")
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
     {
         PooledConnectionLifetime = TimeSpan.FromMinutes(15),
-        ConnectTimeout = TimeSpan.FromSeconds(5),
-        AllowAutoRedirect = false
+        ConnectTimeout = TimeSpan.FromSeconds(8),
+        AllowAutoRedirect = false,
+        ConnectCallback = ConnectPreferIpv4Async
     });
 
 builder.Services.AddHttpClient("InsecureNodeMonitoringClient")
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
     {
         PooledConnectionLifetime = TimeSpan.FromMinutes(15),
-        ConnectTimeout = TimeSpan.FromSeconds(5),
+        ConnectTimeout = TimeSpan.FromSeconds(8),
         AllowAutoRedirect = false,
+        ConnectCallback = ConnectPreferIpv4Async,
         SslOptions = new SslClientAuthenticationOptions
         {
             RemoteCertificateValidationCallback = (_, _, _, _) => true

@@ -2,6 +2,7 @@
 
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
 using Microsoft.EntityFrameworkCore;
@@ -208,6 +209,7 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
                 }
             }
 
+            _nodeRegistry.ResetFailureCount(node.Id);
             _nodeRegistry.RecordSuccess(node.Id, latency);
             node.RecordSuccess(latency);
             await cacheService.SetNodeMetricSnapshotAsync(node.Id, latency, statusCode, isSuccess: true);
@@ -217,11 +219,11 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
                 await broadcaster.BroadcastMetricUpdateAsync(node.Id, latency, statusCode, isSuccess: true);
             }
 
-            // Detect real recovery when an outage ends
+            // Detect real recovery when a confirmed outage ends
             if (await cacheService.HasActiveIncidentLockAsync(node.Id))
             {
                 await cacheService.ReleaseIncidentLockAsync(node.Id);
-                var downtime = TimeSpan.Zero;
+                var downtime = _nodeRegistry.GetAndClearDowntime(node.Id);
 
                 if (dbContext != null)
                 {
@@ -235,9 +237,10 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
                         if (activeIncident != null)
                         {
                             activeIncident.Resolve();
-                            downtime = activeIncident.ResolvedAt.HasValue
-                                ? activeIncident.ResolvedAt.Value - activeIncident.StartedAt
-                                : TimeSpan.Zero;
+                            if (activeIncident.ResolvedAt.HasValue)
+                            {
+                                downtime = activeIncident.ResolvedAt.Value - activeIncident.StartedAt;
+                            }
                         }
                     }
                     catch { }
@@ -253,7 +256,11 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
                     await broadcaster.BroadcastRecoveryAsync(node.Id, node.Name);
                 }
 
-                _logger.LogInformation("Node {NodeName} RECOVERED. Incident resolved.", node.Name);
+                _logger.LogInformation("Node {NodeName} RECOVERED after {Downtime}. Incident resolved.", node.Name, downtime);
+            }
+            else
+            {
+                _nodeRegistry.GetAndClearDowntime(node.Id);
             }
         }
         catch (BrokenCircuitException)
@@ -301,14 +308,40 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
         if (uri.Port <= 0)
             throw new InvalidOperationException($"TCP target '{targetUrl}' must specify an explicit port.");
 
-        var sw = Stopwatch.StartNew();
-        using var tcpClient = new TcpClient();
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(timeoutSeconds, 1, 30)));
+        IPAddress[] addresses;
+        if (IPAddress.TryParse(uri.Host, out var parsed))
+        {
+            addresses = [parsed];
+        }
+        else
+        {
+            var all = await Dns.GetHostAddressesAsync(uri.Host, ct);
+            var ipv4 = all.Where(a => a.AddressFamily == AddressFamily.InterNetwork).ToArray();
+            addresses = ipv4.Length > 0 ? ipv4 : all;
+        }
 
-        await tcpClient.ConnectAsync(uri.Host, uri.Port, timeoutCts.Token);
-        sw.Stop();
-        return (int)sw.ElapsedMilliseconds;
+        Exception? lastException = null;
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            var sw = Stopwatch.StartNew();
+            using var tcpClient = new TcpClient();
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(timeoutSeconds, 1, 30)));
+
+            try
+            {
+                await tcpClient.ConnectAsync(addresses, uri.Port, timeoutCts.Token);
+                sw.Stop();
+                return (int)sw.ElapsedMilliseconds;
+            }
+            catch (Exception ex) when (attempt == 0 && !ct.IsCancellationRequested)
+            {
+                lastException = ex;
+                await Task.Delay(500, ct);
+            }
+        }
+
+        throw lastException!;
     }
 
     private static HttpRequestMessage BuildHttpRequest(string targetUrl, MonitoringNodeOptions? options)
@@ -347,6 +380,21 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
         bool isCritical,
         CancellationToken ct)
     {
+        var nodeOptions = _nodeRegistry.GetNodeOptions(node.Id);
+        int threshold = Math.Max(1, nodeOptions?.FailureThreshold ?? _nodeRegistry.DefaultFailureThreshold);
+        int cooldownMinutes = Math.Max(0, nodeOptions?.AlertCooldownMinutes ?? _nodeRegistry.DefaultAlertCooldownMinutes);
+        int failures = _nodeRegistry.IncrementFailureCount(node.Id);
+
+        if (failures < threshold)
+        {
+            _logger.LogWarning(
+                "Transient probe failure ({Failures}/{Threshold}) on {NodeName}: {Error}. Waiting for confirmation.",
+                failures, threshold, node.Name, error);
+            _nodeRegistry.RecordFailure(node.Id, error, isCritical: false);
+            node.RecordFailure(error, isCritical: false);
+            return;
+        }
+
         _nodeRegistry.RecordFailure(node.Id, error, isCritical);
         node.RecordFailure(error, isCritical);
         await cacheService.SetNodeMetricSnapshotAsync(node.Id, latency, statusCode ?? 0, isSuccess: false);
@@ -361,6 +409,17 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
 
         if (isNewIncident)
         {
+            if (!_nodeRegistry.CanSendAlertNow(node.Id, cooldownMinutes))
+            {
+                _logger.LogInformation(
+                    "Confirmed outage on {NodeName}, alert suppressed by {Cooldown}m cooldown.",
+                    node.Name, cooldownMinutes);
+                return;
+            }
+
+            _nodeRegistry.MarkAlertSent(node.Id);
+            _nodeRegistry.MarkIncidentStarted(node.Id);
+
             if (dbContext != null)
             {
                 try
@@ -384,8 +443,9 @@ public sealed class NodeHealthMonitoringWorker : BackgroundService
                 DateTime.UtcNow
             ), ct);
 
-            _logger.LogWarning("NEW INCIDENT [{Severity}] on {NodeName}: {Error}. Alert dispatched.",
-                isCritical ? "Critical" : "Warning", node.Name, error);
+            _logger.LogWarning(
+                "CONFIRMED INCIDENT [{Severity}] ({Failures}/{Threshold}) on {NodeName}: {Error}. Alert dispatched.",
+                isCritical ? "Critical" : "Warning", failures, threshold, node.Name, error);
         }
     }
 }

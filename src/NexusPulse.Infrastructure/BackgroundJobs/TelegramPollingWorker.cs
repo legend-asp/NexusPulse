@@ -195,6 +195,11 @@ public class TelegramPollingWorker : BackgroundService
 
                     var (nodeName, _, displayUrl) = _nodeRegistry.GetNodeInfo(nodeId);
 
+                    _nodeRegistry.ResetFailureCount(nodeId);
+                    var downtime = _nodeRegistry.GetAndClearDowntime(nodeId);
+                    _nodeRegistry.RecordSuccess(nodeId, 24);
+                    await _broadcaster.BroadcastRecoveryAsync(nodeId, nodeName);
+
                     using (var scope = _scopeFactory.CreateScope())
                     {
                         var cache = scope.ServiceProvider.GetRequiredService<ICacheService>();
@@ -202,11 +207,8 @@ public class TelegramPollingWorker : BackgroundService
                         await cache.ReleaseIncidentLockAsync(nodeId);
 
                         var notifier = scope.ServiceProvider.GetRequiredService<ITelegramNotifier>();
-                        await notifier.SendRecoveryAlertAsync(nodeName, displayUrl, TimeSpan.Zero);
+                        await notifier.SendRecoveryAlertAsync(nodeName, displayUrl, downtime);
                     }
-
-                    _nodeRegistry.RecordSuccess(nodeId, 24);
-                    await _broadcaster.BroadcastRecoveryAsync(nodeId, nodeName);
 
                     await botClient.AnswerCallbackQuery(
                         callbackQueryId: callback.Id,

@@ -12,14 +12,22 @@ public sealed class MonitoredNodeRegistry : IMonitoredNodeRegistry
     private readonly ConcurrentDictionary<Guid, MonitoredNode> _nodes = new();
     private readonly ConcurrentDictionary<Guid, MonitoringNodeOptions> _options = new();
     private readonly ConcurrentDictionary<Guid, int> _latencies = new();
+    private readonly ConcurrentDictionary<Guid, int> _consecutiveFailures = new();
+    private readonly ConcurrentDictionary<Guid, DateTime> _lastAlertTimes = new();
+    private readonly ConcurrentDictionary<Guid, DateTime> _incidentStartedTimes = new();
     private readonly List<Guid> _orderedIds = new();
 
     public bool HasConfiguredNodes { get; }
+    public int DefaultFailureThreshold { get; }
+    public int DefaultAlertCooldownMinutes { get; }
 
     public MonitoredNodeRegistry(IConfiguration configuration, ILogger<MonitoredNodeRegistry> logger)
     {
         var section = configuration.GetSection(MonitoringOptions.SectionName);
         var monitoringOptions = section.Get<MonitoringOptions>() ?? new MonitoringOptions();
+
+        DefaultFailureThreshold = Math.Clamp(monitoringOptions.DefaultFailureThreshold, 1, 20);
+        DefaultAlertCooldownMinutes = Math.Clamp(monitoringOptions.DefaultAlertCooldownMinutes, 0, 1440);
 
         if (monitoringOptions.Nodes.Count > 0)
         {
@@ -48,7 +56,9 @@ public sealed class MonitoredNodeRegistry : IMonitoredNodeRegistry
                 _orderedIds.Add(id);
             }
 
-            logger.LogInformation("Loaded {Count} configured monitoring targets from settings.", _orderedIds.Count);
+            logger.LogInformation(
+                "Loaded {Count} configured monitoring targets (DefaultFailureThreshold={Threshold}, Cooldown={Cooldown}m).",
+                _orderedIds.Count, DefaultFailureThreshold, DefaultAlertCooldownMinutes);
         }
         else
         {
@@ -117,6 +127,42 @@ public sealed class MonitoredNodeRegistry : IMonitoredNodeRegistry
 
     public int GetLastLatency(Guid nodeId, int defaultLatency = 24) =>
         _latencies.TryGetValue(nodeId, out var latency) ? latency : defaultLatency;
+
+    public int IncrementFailureCount(Guid nodeId) =>
+        _consecutiveFailures.AddOrUpdate(nodeId, 1, (_, current) => current + 1);
+
+    public void ResetFailureCount(Guid nodeId) =>
+        _consecutiveFailures.TryRemove(nodeId, out _);
+
+    public bool CanSendAlertNow(Guid nodeId, int cooldownMinutes, DateTime? utcNow = null)
+    {
+        if (cooldownMinutes <= 0)
+            return true;
+
+        var now = utcNow ?? DateTime.UtcNow;
+        if (_lastAlertTimes.TryGetValue(nodeId, out var lastSent))
+        {
+            return (now - lastSent) >= TimeSpan.FromMinutes(cooldownMinutes);
+        }
+
+        return true;
+    }
+
+    public void MarkAlertSent(Guid nodeId, DateTime? utcNow = null) =>
+        _lastAlertTimes[nodeId] = utcNow ?? DateTime.UtcNow;
+
+    public void MarkIncidentStarted(Guid nodeId, DateTime? utcNow = null) =>
+        _incidentStartedTimes.TryAdd(nodeId, utcNow ?? DateTime.UtcNow);
+
+    public TimeSpan GetAndClearDowntime(Guid nodeId, DateTime? utcNow = null)
+    {
+        if (_incidentStartedTimes.TryRemove(nodeId, out var startedAt))
+        {
+            var elapsed = (utcNow ?? DateTime.UtcNow) - startedAt;
+            return elapsed > TimeSpan.Zero ? elapsed : TimeSpan.Zero;
+        }
+        return TimeSpan.Zero;
+    }
 
     private static List<MonitoredNode> CreateDefaultDemoNodes() =>
     [
